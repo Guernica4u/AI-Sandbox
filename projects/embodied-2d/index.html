@@ -7,17 +7,28 @@
  walk and pick up a glass of water by neuroevolution. Nothing is scripted:
  every movement you see is a small neural network driving the motors.
 
- Files:
+ Modes
+   Watch   see an agent try its skill; show the reference "ideal" as a ghost;
+           test it 10 times for a success rate
+   Train   48 variations per generation; optionally "learn from" the reference
+           movement or your own demonstration (off by default)
+   Teach   move the agent's limbs yourself (drag any part, or use sliders) while
+           its brain keeps fighting you; record keyframes as a demonstration.
+           Teaching never changes a brain or a training run.
+
+ Files
    vendor/rapier2d.js  Rapier 2D physics (Apache-2.0), bundled as a plain script
    brain.js            networks + evolution + brain file format (engine-agnostic, reused for 3D)
-   body2d.js           the body, the world and the tasks
-   starters.js         pretrained starter agents (Kit, Juno, Pax)
-   index.html          this page: viewing, training, saving
+   body2d.js           the body, the world, obstacles, tasks, motion clips
+   starters.js         pretrained example agents (Kit, Juno, Pax)
+   index.html          this page
 
  AGENT FILE FORMAT  (format "glassbox-body-agent", formatVersion 1)
  { "format": "glassbox-body-agent", "formatVersion": 1, "app": "Glass Box",
-   "name": "Kit", "seed": 1, "bodyPlan": "biped2d-v1",
-   "skills": { "stand": <glassbox-body-brain>, "walk": ..., "grab": ... } }
+   "name": "Kit", "seed": 1, "bodyPlan": "biped2d-v2",
+   "skills": { "stand": <glassbox-body-brain>, "walk": ..., "grab": ... },
+   "demos": { "walk": <motion clip, see body2d.js> },        (optional)
+   "learnFrom": { "walk": "none" | "ref" | "demo" } }         (optional)
  A single "glassbox-body-brain" file (see brain.js) can also be imported.
 ================================================================================
 -->
@@ -33,7 +44,7 @@
 :root {
   --bg: #0a0b0d; --surface: #111317; --surface2: #16191e; --line: #23272e; --line2: #2f343c;
   --text: #e8e6e1; --muted: #8a8f98; --faint: #5a5f68;
-  --signal: #ff6a3d; --hue: #4fd1c5; --water: #4aa3ff; --bad: #ef6a5b;
+  --signal: #ff6a3d; --hue: #4fd1c5; --water: #4aa3ff; --bad: #ef6a5b; --ghost: #9ad7ff;
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
@@ -43,6 +54,7 @@ body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
 button, select, input { font: inherit; color: inherit; }
 .label { font: 500 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 .mono { font-family: var(--mono); }
+[hidden] { display: none !important; }
 
 header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .back { color: var(--muted); text-decoration: none; font: 500 12px var(--mono); letter-spacing: .06em; border: 1px solid var(--line2); padding: 5px 10px; }
@@ -51,21 +63,25 @@ header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding
 .title i { font-style: normal; color: var(--hue); }
 header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #saveStatus { color: var(--faint); font: 11px var(--mono); }
+#trainBadge { font: 11px var(--mono); color: var(--hue); border: 1px solid color-mix(in srgb, var(--hue) 50%, transparent); padding: 3px 8px; cursor: pointer; background: none; }
 
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; padding: 16px; max-width: 1500px; margin: 0 auto; }
 @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
 .panel { background: var(--surface); border: 1px solid var(--line); }
-.panel > .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.panel > .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .panel > .body { padding: 12px; }
 .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
 /* stage */
-.stage { position: relative; aspect-ratio: 16 / 8; background: #0d0f12; border-bottom: 1px solid var(--line); }
+.stage { position: relative; aspect-ratio: 16 / 8; background: #0d0f12; border-bottom: 1px solid var(--line); touch-action: none; }
 @media (max-width: 640px) { .stage { aspect-ratio: 4 / 3; } .seg button { padding: 7px 9px; } }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
-.stage .hint { position: absolute; right: 12px; bottom: 10px; font: 11px var(--mono); color: var(--faint); pointer-events: none; }
+.stage.teach canvas { cursor: grab; }
+.stage.teach.dragging canvas { cursor: grabbing; }
+.stage .hint { position: absolute; right: 12px; bottom: 10px; font: 11px var(--mono); color: var(--faint); pointer-events: none; text-align: right; }
 
-.bar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px; }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 12px; }
+.bar + .bar { padding-top: 0; }
 .seg { display: inline-flex; border: 1px solid var(--line2); }
 .seg button { background: none; border: 0; border-right: 1px solid var(--line2); padding: 7px 12px; cursor: pointer; color: var(--muted); font: 500 12px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .seg button:last-child { border-right: 0; }
@@ -77,31 +93,46 @@ header .right { margin-left: auto; display: flex; gap: 8px; align-items: center;
 .btn.go { color: var(--hue); border-color: color-mix(in srgb, var(--hue) 60%, transparent); background: color-mix(in srgb, var(--hue) 9%, transparent); }
 .btn.go.on { background: var(--hue); color: #0a0b0d; }
 .btn.small { padding: 4px 8px; font-size: 11px; }
+.btn.on { border-color: var(--hue); color: var(--hue); }
 select { background: var(--surface2); border: 1px solid var(--line2); padding: 6px 8px; font: 13px var(--mono); }
+.check { display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono); color: var(--muted); cursor: pointer; }
+.check input { accent-color: var(--hue); }
 .grow { flex: 1; }
 
-.status { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
-.status > div { background: var(--surface); padding: 10px 12px; }
-.status b { display: block; font: 600 16px var(--mono); margin-top: 4px; color: var(--text); }
+.status { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+.status > div { background: var(--surface); padding: 10px 12px; min-width: 0; }
+.status b { display: block; font: 600 15px var(--mono); margin-top: 4px; color: var(--text); overflow-wrap: anywhere; }
 .status b.hue { color: var(--hue); }
+.status small { display: block; color: var(--faint); font: 11px var(--mono); margin-top: 2px; }
 
 .skillnote { padding: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .skillnote strong { color: var(--text); font-weight: 600; }
+.warn { color: var(--signal); font-family: var(--mono); font-size: 12px; }
 
 /* side panels */
 canvas.fill { display: block; width: 100%; }
 #brainCanvas { height: 300px; }
 #chart { height: 150px; }
-.joints { display: grid; grid-template-columns: 74px 1fr 46px; gap: 5px 8px; align-items: center; font: 11px var(--mono); }
+.joints { display: grid; grid-template-columns: 78px 1fr 46px; gap: 5px 8px; align-items: center; font: 11px var(--mono); }
 .joints .n { color: var(--muted); }
+.joints .n.held { color: var(--signal); }
 .joints .v { color: var(--faint); text-align: right; }
 .jbar { position: relative; height: 10px; background: var(--surface2); border: 1px solid var(--line); }
 .jbar i { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--text); }
 .jbar u { position: absolute; top: 2px; bottom: 2px; width: 2px; background: var(--signal); text-decoration: none; }
 .jbar s { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--signal) 30%, transparent); text-decoration: none; }
+.joints input[type=range] { width: 100%; accent-color: var(--signal); margin: 0; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font: 11px var(--mono); color: var(--faint); }
 .legend span::before { content: ""; display: inline-block; width: 10px; height: 2px; margin-right: 6px; vertical-align: middle; background: currentColor; }
 .legend .best { color: var(--hue); } .legend .mean { color: var(--faint); }
+
+/* teach */
+.keys { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; min-height: 30px; align-items: center; }
+.key { font: 12px var(--mono); border: 1px solid var(--line2); background: var(--surface2); padding: 4px 8px; cursor: pointer; }
+.key[aria-pressed="true"] { border-color: var(--signal); color: var(--signal); }
+.key i { font-style: normal; color: var(--water); margin-left: 4px; }
+.teachrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.teachrow input[type=number] { width: 74px; background: var(--bg); border: 1px solid var(--line2); padding: 5px 6px; font: 12px var(--mono); }
 
 .about { color: var(--muted); font-size: 13px; }
 .about p { margin: 0 0 8px; }
@@ -113,7 +144,7 @@ dialog .head { padding: 12px 14px; border-bottom: 1px solid var(--line); }
 dialog .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 dialog input[type=text] { background: var(--bg); border: 1px solid var(--line2); padding: 7px 9px; font: 14px var(--mono); }
 dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
-#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--surface2); border: 1px solid var(--line2); padding: 8px 14px; font: 12px var(--mono); opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100vw - 32px); }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--surface2); border: 1px solid var(--line2); padding: 8px 14px; font: 12px var(--mono); opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100vw - 32px); z-index: 5; }
 #toast.show { opacity: 1; }
 .loading { position: absolute; inset: 0; display: grid; place-items: center; font: 12px var(--mono); color: var(--muted); }
 </style>
@@ -123,6 +154,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
   <a class="back" href="../../index.html">← Hub</a>
   <div class="title">GLASS BOX / <i>EMBODIED 2D</i></div>
   <div class="right">
+    <button id="trainBadge" hidden title="Training runs in the background. Click to stop."></button>
     <span class="label">Agent</span>
     <select id="agentPick" aria-label="Agent"></select>
     <button class="btn small" id="newAgent">+ New agent</button>
@@ -139,37 +171,79 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
       <div class="stage" id="stage">
         <canvas id="view"></canvas>
         <div class="loading" id="loading">Loading physics…</div>
-        <div class="hint" id="stageHint">Click near the body to shove it</div>
+        <div class="hint" id="stageHint"></div>
       </div>
       <div class="bar">
         <div class="seg" id="skillTabs" role="group" aria-label="Skill"></div>
         <div class="seg" id="modeTabs" role="group" aria-label="Mode">
           <button data-mode="watch" aria-pressed="true">Watch</button>
           <button data-mode="train" aria-pressed="false">Train</button>
+          <button data-mode="teach" aria-pressed="false">Teach</button>
         </div>
-        <span class="grow"></span>
-        <span id="watchCtl"><button class="btn" id="restart">Restart</button></span>
-        <span id="trainCtl" hidden>
-          <label class="label" for="speed">Speed</label>
-          <select id="speed">
-            <option value="1">Real time (watch every try)</option>
-            <option value="12" selected>Fast</option>
-            <option value="40">Fastest</option>
-          </select>
-          <button class="btn go" id="trainBtn">Start training</button>
-        </span>
+      </div>
+      <div class="bar" id="watchCtl">
+        <button class="btn" id="restart">Restart</button>
+        <button class="btn" id="testBtn">Test 10 runs</button>
+        <label class="check"><input type="checkbox" id="ghostOn"> Show ideal (ghost)</label>
+      </div>
+      <div class="bar" id="trainCtl" hidden>
+        <label class="label" for="learnFrom">Learn from</label>
+        <select id="learnFrom">
+          <option value="none">Nothing (just the score)</option>
+          <option value="ref">Reference movement</option>
+          <option value="demo">My demonstration</option>
+        </select>
+        <label class="label" for="speed">Speed</label>
+        <select id="speed">
+          <option value="1">Real time (watch every try)</option>
+          <option value="12" selected>Fast</option>
+          <option value="40">Fastest</option>
+        </select>
+        <button class="btn go" id="trainBtn">Start training</button>
+      </div>
+      <div class="bar" id="teachCtl" hidden>
+        <label class="check"><input type="checkbox" id="harnessOn" checked> Harness (hold the hips up)</label>
+        <button class="btn" id="holdBtn">Hold pose</button>
+        <button class="btn" id="letGoBtn">Let go</button>
+        <button class="btn" id="handBtn">Hand: brain</button>
+        <button class="btn" id="standUp">Reset body</button>
       </div>
       <div class="status">
         <div><span class="label">Generation</span><b id="stGen">0</b></div>
         <div><span class="label">Best score</span><b id="stBest" class="hue">—</b></div>
         <div><span class="label">Difficulty</span><b id="stHard">—</b></div>
+        <div><span class="label">Success</span><b id="stSuccess">—</b><small id="stSuccessNote">not tested</small></div>
         <div><span class="label" id="stOutLabel">Right now</span><b id="stOut">—</b></div>
+        <div><span class="label">Energy used</span><b id="stEnergy">—</b><small>not scored (yet)</small></div>
       </div>
       <div class="skillnote" id="skillNote"></div>
     </section>
 
+    <section class="panel" id="teachPanel" hidden>
+      <div class="head"><span class="label" id="teachTitle">Demonstration</span>
+        <span class="teachrow" style="margin:0">
+          <label class="check"><input type="checkbox" id="clipLoop"> Loop (1 s cycle)</label>
+          <button class="btn small" id="loadRef">Start from reference</button>
+          <button class="btn small" id="clearClip">Clear</button>
+        </span>
+      </div>
+      <div class="body">
+        <div class="about">Pose the body (drag parts, or use the sliders below), then <b>Add key</b>. Add a few keys at different times and press <b>Play</b> to see them blend. <b>Save</b> keeps it as this agent's demonstration for this skill; it only affects training if you pick "Learn from: My demonstration".</div>
+        <div class="keys" id="keys"></div>
+        <div class="teachrow">
+          <label class="label" for="keyTime">Time</label><input type="number" id="keyTime" step="0.05" min="0" value="0">
+          <button class="btn" id="addKey">Add key</button>
+          <button class="btn" id="updKey" disabled>Update key</button>
+          <button class="btn" id="delKey" disabled>Delete key</button>
+          <span class="grow"></span>
+          <button class="btn" id="playClip">Play</button>
+          <button class="btn go" id="saveClip">Save demonstration</button>
+        </div>
+      </div>
+    </section>
+
     <section class="panel">
-      <div class="head"><span class="label">Joints · angle (white), motor target (orange), effort</span></div>
+      <div class="head"><span class="label" id="jointsTitle">Joints · angle (white), motor target (orange), effort</span></div>
       <div class="body"><div class="joints" id="joints"></div></div>
     </section>
   </div>
@@ -189,9 +263,10 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
     <section class="panel">
       <div class="head"><span class="label">How this works</span></div>
       <div class="body about">
-        <p>Each agent's body has <b>10 motorised joints</b> and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, feet on the ground, where the glass is) and sets a target angle and strength for every motor.</p>
-        <p><b>Nobody programs the movements.</b> Training tries 48 slightly different brains, keeps the ones that score best, and repeats. Two agents trained on the same skill end up moving differently, because each has its own random seed.</p>
-        <p>Skills build on each other: <b>Walk</b> and <b>Pick up the glass</b> start from the agent's <b>Stand</b> brain, because you have to balance before you can do anything else.</p>
+        <p>Each body has <b>10 motorised joints</b> (both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, feet, the ground ahead, where the glass is) and sets a target for every motor.</p>
+        <p><b>Nobody programs the movements.</b> Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, then sticks and logs on the ground, and the grip assist fades away.</p>
+        <p><b>Teach</b> lets you move the limbs yourself while the brain keeps fighting you. Your keyframes become a demonstration that training can learn from, only if you choose it.</p>
+        <p>New agents start knowing nothing. <b>Kit, Juno and Pax</b> are trained examples.</p>
       </div>
     </section>
   </div>
@@ -215,63 +290,83 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 <script>
 'use strict';
 const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
-const { DT, BIPED, SIZES, MOTORS, TASKS, GLASS, Trial, hardness, episodeConfigs, combineScores, wrap } = Body2D;
+const { DT, BIPED, SIZES, MOTORS, TASKS, GLASS, TABLE, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
+  REFERENCE, REST_POSE, POSE_KEYS, clipPose, poseParts } = Body2D;
 let R = null;
 
 const SKILLS = ['stand', 'walk', 'grab'];
 const SKILL_NOTES = {
-  stand: '<strong>Stand.</strong> Stay upright and stay put while something shoves you every 2 seconds. Scored on time on your feet, minus drifting away.',
-  walk: '<strong>Walk.</strong> Get as far right as possible in 10 seconds without falling. Starts from the agent\'s Stand brain. Scored on distance plus time upright.',
-  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a table. Close the hand on it and lift it without tipping it past 50° (that spills it). Grab it low and it tips over; the agent has to work that out. Starts from the Stand brain.',
+  stand: '<strong>Stand.</strong> Stay upright and in place while something shoves you every 2 seconds. Sitting, kneeling and the splits count as falling. Scored on time on your feet, minus drifting and a too-wide stance.',
+  walk: '<strong>Walk.</strong> Get as far right as possible in 10 seconds without falling. First on flat ground, then sticks (drag your feet and you trip) and logs (step over them) appear. Starts from the agent\'s Stand brain.',
+  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a small wall shelf. Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Each step earns reward. Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
 };
 const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
-const NAMES = ['Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Echo', 'Tarn', 'Vale'];
+const NAMES = ['Nova', 'Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Echo', 'Tarn', 'Vale'];
 
 /* ================= agents & storage ================= */
-const LS_KEY = 'glassbox-embodied2d/agents';
-const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false };
+const LS_KEY = 'glassbox-embodied2d/v2';
+const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false, ghost: false };
+const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-function agentFromStarter(name, data, i) {
-  const skills = {};
-  for (const k of SKILLS) if (data[k]) { const r = brainFromJSON(data[k]); if (r.ok) skills[k] = skillFromBrain(r.brain); }
-  return { id: 'a' + Date.now().toString(36) + i, name, seed: (skills.stand && skills.stand.seed) || i + 1, color: COLORS[i % COLORS.length], skills, starter: true };
-}
 function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, history: b.history || [], created: b.created, updated: b.updated }; }
-function skillToBrainJSON(agent, skill) {
-  const s = agent.skills[skill];
-  return brainToJSON({ name: agent.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, history: s.history, created: s.created, updated: s.updated });
+function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], skills: {}, demos: {}, learnFrom: {}, tests: {} }; }
+function agentFromStarter(name, data, i) {
+  const a = blankAgent(name, i, 0);
+  for (const k of SKILLS) if (data[k]) { const r = brainFromJSON(data[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) a.skills[k] = skillFromBrain(r.brain); }
+  a.seed = (a.skills.stand && a.skills.stand.seed) || i + 1; a.starter = true;
+  if (data._learnFrom) for (const k of SKILLS) if (['none', 'ref'].includes(data._learnFrom[k])) a.learnFrom[k] = data._learnFrom[k];   // how it was trained
+  return a;
+}
+function skillToBrainJSON(a, skill) {
+  const s = a.skills[skill];
+  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, history: s.history, created: s.created, updated: s.updated });
 }
 function agentToJSON(a) {
   const skills = {};
   for (const k of SKILLS) if (a.skills[k]) skills[k] = skillToBrainJSON(a, k);
-  return { format: 'glassbox-body-agent', formatVersion: 1, app: 'Glass Box', exportedAt: new Date().toISOString(), name: a.name, seed: a.seed, color: a.color, bodyPlan: BIPED.id, skills };
+  return { format: 'glassbox-body-agent', formatVersion: 1, app: 'Glass Box', exportedAt: new Date().toISOString(), name: a.name, seed: a.seed, color: a.color,
+    bodyPlan: BIPED.id, starter: !!a.starter, skills, demos: a.demos, learnFrom: a.learnFrom, tests: a.tests };
 }
+function validClip(c) { return c && Array.isArray(c.keys) && c.keys.every(k => typeof k.t === 'number' && k.pose && typeof k.pose === 'object') && c.keys.length <= 200; }
 function agentFromJSON(j, i) {
-  if (!j || j.format !== 'glassbox-body-agent') return null;
-  if (j.formatVersion > 1 || j.bodyPlan !== BIPED.id) return null;
-  const skills = {};
-  for (const k of SKILLS) if (j.skills && j.skills[k]) { const r = brainFromJSON(j.skills[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) skills[k] = skillFromBrain(r.brain); }
-  return { id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: String(j.name || 'Agent').slice(0, 24), seed: j.seed >>> 0 || 1, color: /^#[0-9a-f]{6}$/i.test(j.color) ? j.color : COLORS[i % COLORS.length], skills };
+  if (!j || j.format !== 'glassbox-body-agent' || j.formatVersion > 1) return null;
+  const a = blankAgent(String(j.name || 'Agent').slice(0, 24), i, j.seed);
+  if (/^#[0-9a-f]{6}$/i.test(j.color)) a.color = j.color;
+  a.starter = !!j.starter;
+  if (j.bodyPlan === BIPED.id) for (const k of SKILLS) if (j.skills && j.skills[k]) { const r = brainFromJSON(j.skills[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) a.skills[k] = skillFromBrain(r.brain); }
+  for (const k of SKILLS) {
+    if (j.demos && validClip(j.demos[k])) a.demos[k] = j.demos[k];
+    if (j.learnFrom && ['none', 'ref', 'demo'].includes(j.learnFrom[k])) a.learnFrom[k] = j.learnFrom[k];
+    if (j.tests && j.tests[k] && typeof j.tests[k].ok === 'number') a.tests[k] = j.tests[k];
+  }
+  return a;
 }
 function saveAll() {
   if (!App.dirty) return;
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify({ v: 1, agentIndex: App.agents.indexOf(agent()), skill: App.skill, agents: App.agents.map(agentToJSON) }));
+    localStorage.setItem(LS_KEY, JSON.stringify({ v: 2, agentIndex: App.agents.indexOf(agent()), skill: App.skill, ghost: App.ghost, agents: App.agents.map(agentToJSON) }));
     App.dirty = false; $('#saveStatus').textContent = 'saved';
   } catch (e) { $('#saveStatus').textContent = 'not saved (storage blocked)'; }
+}
+function starterAgents(offset) {
+  const st = window.EMBODIED_STARTERS || {};
+  return Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i + offset));
 }
 function loadAll() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { d = null; }
   if (d && Array.isArray(d.agents)) {
     App.agents = d.agents.map(agentFromJSON).filter(Boolean);
-    if (App.agents.length) { App.agentId = (App.agents[d.agentIndex] || App.agents[0]).id; if (SKILLS.includes(d.skill)) App.skill = d.skill; }
+    if (App.agents.length) { App.agentId = (App.agents[d.agentIndex] || App.agents[0]).id; if (SKILLS.includes(d.skill)) App.skill = d.skill; App.ghost = !!d.ghost; }
+    // refresh the example agents if this version ships newer ones (your own agents are untouched)
+    const fresh = starterAgents(1);
+    App.agents = App.agents.map(a => a.starter ? (fresh.find(f => f.name === a.name) || a) : a);
   }
   if (!App.agents.length) {
-    const st = window.EMBODIED_STARTERS || {};
-    App.agents = Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i));
-    if (!App.agents.length) App.agents = [{ id: 'a0', name: 'Kit', seed: 1, color: COLORS[0], skills: {} }];
+    // first visit: an untrained agent of your own, plus the trained examples
+    App.agents = [blankAgent('Nova', 0)].concat(starterAgents(1));
     App.dirty = true;
   }
   if (!App.agents.some(a => a.id === App.agentId)) App.agentId = App.agents[0].id;
@@ -280,20 +375,32 @@ const agent = () => App.agents.find(a => a.id === App.agentId);
 function markDirty() { App.dirty = true; $('#saveStatus').textContent = 'unsaved'; }
 function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms); }
 
-/** The brain an agent uses for a skill. Walk and grab fall back to the stand brain (that's where training starts). */
+/** The brain an agent uses for a skill. Walk and grab start from the stand brain (with unused senses cut). */
 function brainFor(a, skill) {
   if (a.skills[skill]) return { params: a.skills[skill].params, from: skill };
-  if (skill !== 'stand' && a.skills.stand) return { params: a.skills.stand.params, from: 'stand' };
+  if (skill !== 'stand' && a.skills.stand) return { params: transferBrain(a.skills.stand.params, 'stand', skill), from: 'stand' };
   return { params: Network.random(SIZES, makeRng(a.seed * 977 + skill.length)).params, from: null };
+}
+/** The clip an agent's training should imitate for a skill, or null. */
+function imitationFor(a, skill) {
+  const lf = a.learnFrom[skill] || 'none';
+  if (lf === 'ref') return REFERENCE[skill];
+  if (lf === 'demo' && a.demos[skill]) return a.demos[skill];
+  return null;
+}
+/** Curriculum settings for watching or testing a skill at its current level. */
+function levelOpts(a, skill) {
+  const g = a.skills[skill] ? a.skills[skill].generation : 0, hard = hardness(g);
+  return { hard, terrainLevel: terrainLevel(g), assist: skill === 'grab' ? gripAssist(g) : 0, noise: 0.02 * hard };
 }
 
 /* ================= watching ================= */
-const Watch = { trial: null, endAt: 0, outcome: '' };
+const Watch = { trial: null, endAt: 0 };
 function startWatch() {
   if (Watch.trial) Watch.trial.free();
-  const a = agent(), s = a.skills[App.skill], hard = s ? hardness(s.generation) : 0;
-  const variant = App.skill === 'grab' ? Math.floor(Math.random() * 3) - 1 : 0;
-  Watch.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], { seed: (Math.random() * 1e9) | 0, variant, hard, push: 0, noise: 0.02 * hard, keepSimulating: true });
+  const a = agent();
+  Watch.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], Object.assign(levelOpts(a, App.skill),
+    { seed: (Math.random() * 1e9) | 0, variant: App.skill === 'grab' ? Math.floor(Math.random() * 3) - 1 : 0, push: 0, keepSimulating: true }));
   Watch.endAt = 0;
   View.camX = 0;
 }
@@ -303,36 +410,67 @@ function stepWatch() {
   if (!t.finished) t.step();
   else if (!Watch.endAt) Watch.endAt = performance.now() + 1600;
   else if (performance.now() > Watch.endAt) startWatch();
-  else if (t.keepSimulating) for (const a of t.agents) a.world.step();   // let it settle
+  else for (const a of t.agents) a.world.step();   // let it settle
 }
 
-/* ================= training (time-sliced so the page stays smooth) ================= */
-const Train = {
-  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12,
+/* ================= testing: 10 runs → success rate ================= */
+const Test = {
+  running: false, n: 10, k: 0, ok: 0, trial: null, agentId: null, skill: null,
   start() {
+    if (this.running) return;
+    const a = agent();
+    Object.assign(this, { running: true, k: 0, ok: 0, agentId: a.id, skill: App.skill, brain: brainFor(a, App.skill).params, opts: levelOpts(a, App.skill) });
+    this.next(); $('#testBtn').disabled = true;
+  },
+  next() {
+    if (this.trial) this.trial.free();
+    this.trial = new Trial(R, this.skill, [this.brain], Object.assign({}, this.opts, { seed: 77777 + this.k * 131, variant: (this.k % 3) - 1 }));
+  },
+  tick() {
+    if (!this.running) return;
+    const until = performance.now() + 8;
+    while (performance.now() < until) {
+      this.trial.step();
+      if (this.trial.finished) {
+        if (this.trial.successes()[0]) this.ok++;
+        if (++this.k >= this.n) return this.finish();
+        this.next();
+      }
+    }
+    $('#stSuccess').textContent = `${this.ok}/${this.k}…`;
+  },
+  finish() {
+    this.trial.free(); this.trial = null; this.running = false; $('#testBtn').disabled = false;
+    const a = App.agents.find(x => x.id === this.agentId);
+    if (a) { a.tests[this.skill] = { ok: this.ok, n: this.n, generation: a.skills[this.skill] ? a.skills[this.skill].generation : 0, level: this.opts.hard }; markDirty(); }
+    renderStatus();
+    toast(`${this.ok} of ${this.n} runs: ${TASKS[this.skill].successText}`);
+  },
+};
+
+/* ================= training (runs in the background, time-sliced) ================= */
+const Train = {
+  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12, imitate: null,
+  start() {
+    if (this.running) this.stop();
     const a = agent(), s = a.skills[App.skill], from = brainFor(a, App.skill);
-    this.skill = App.skill; this.agentId = a.id;
+    this.skill = App.skill; this.agentId = a.id; this.imitate = imitationFor(a, App.skill);
     this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (s ? s.seed : a.seed * 31 + App.skill.length) + (s ? s.generation : 0), sigma: s ? s.sigma : 0.15,
       parent: from.params, generation: s ? s.generation : 0, history: s ? s.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
     if (!s && from.from === 'stand') toast(`Starting ${TASKS[App.skill].name} from ${a.name}'s Stand brain`);
-    this.running = true; this.newGeneration(); updateTrainButton();
+    else if (!s && App.skill !== 'stand') toast(`${a.name} can't stand yet. Training from scratch works, but Stand first is much faster.`, 4000);
+    this.running = true; this.newGeneration(); renderTrainUI();
   },
   stop() {
     this.running = false;
     if (this.trial) { this.trial.free(); this.trial = null; }
-    updateTrainButton();
+    renderTrainUI(); refreshAgents();
   },
-  newGeneration() {
-    this.episodes = episodeConfigs(this.skill, this.evo.generation); this.ep = 0; this.perEpisode = [];
-    this.newEpisode();
-  },
-  newEpisode() {
-    if (this.trial) this.trial.free();
-    this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]);
-  },
+  newGeneration() { this.episodes = episodeConfigs(this.skill, this.evo.generation, this.imitate); this.ep = 0; this.perEpisode = []; this.newEpisode(); },
+  newEpisode() { if (this.trial) this.trial.free(); this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]); },
   tick() {
     if (!this.running) return;
-    const realtime = this.budget <= 1, until = performance.now() + this.budget;
+    const realtime = this.budget <= 1 && App.mode === 'train', until = performance.now() + (App.mode === 'train' ? this.budget : 8);
     do {
       this.trial.step();
       if (this.trial.finished) {
@@ -343,32 +481,171 @@ const Train = {
     } while (!realtime && performance.now() < until);
   },
   finishGeneration() {
-    const r = this.evo.tell(combineScores(this.perEpisode));
+    this.evo.tell(combineScores(this.perEpisode));
     const a = App.agents.find(x => x.id === this.agentId);
     if (a) {
       const now = new Date().toISOString(), prev = a.skills[this.skill];
       a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, history: this.evo.history, created: prev ? prev.created : now, updated: now };
       a.starter = false; markDirty();
     }
-    renderStatus();
+    renderStatus(); renderTrainUI();
     this.newGeneration();
   },
+  isShowing() { return this.running && this.agentId === App.agentId && this.skill === App.skill; },
 };
-function updateTrainButton() {
-  const b = $('#trainBtn');
-  b.textContent = Train.running ? 'Stop training' : 'Start training';
-  b.classList.toggle('on', Train.running);
+function renderTrainUI() {
+  const b = $('#trainBtn'), here = Train.isShowing();
+  b.textContent = here ? 'Stop training' : Train.running ? 'Train this instead' : 'Start training';
+  b.classList.toggle('on', here);
+  const badge = $('#trainBadge');
+  badge.hidden = !Train.running;
+  if (Train.running) { const a = App.agents.find(x => x.id === Train.agentId); badge.textContent = `● TRAINING ${a ? a.name : ''} · ${TASKS[Train.skill].name} · gen ${Train.evo.generation}`; }
 }
 
-/** The attempt doing best right now (by the task's own score), or the watched body. */
-function shown() {
-  const training = App.mode === 'train' && Train.running && Train.trial;
-  const t = training ? Train.trial : Watch.trial;
-  if (!t || !t.agents.length) return { t, a: null, training };
-  if (!training) return { t, a: t.agents[0], training };
-  let best = t.agents[0], bs = -Infinity;
-  for (const a of t.agents) { const sc = a.fitness !== undefined ? a.fitness - 50 : t.task.score(a.st, a.body); if (sc > bs) { bs = sc; best = a; } }
-  return { t, a: best, training };
+/* ================= teaching ================= */
+const Teach = {
+  trial: null, override: {}, harness: null, tilt: 0, drag: null, grip: null, holding: false,
+  clip: null, sel: -1, playing: false, playT: 0,
+  start() {
+    this.stopTrial();
+    const a = agent();
+    this.override = {}; this.holding = false;
+    this.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], Object.assign(levelOpts(a, App.skill),
+      { seed: 4242, variant: 0, push: 0, noise: 0, terrain: [], override: this.override, keepSimulating: true }));
+    this.trial.maxSteps = Infinity;
+    this.trial.hard = 0;                       // no automatic shoves while you teach
+    this.world().numSolverIterations = 24;     // stiffer joint limits while you pull on limbs (one body, so it's cheap)
+    this.trial.gripOverride = this.grip;
+    this.tilt = 0;
+    this.setHarness($('#harnessOn').checked);
+    View.camX = 0.2;
+    if (!this.clip || this.clip.skill !== App.skill) this.loadClip();
+  },
+  stopTrial() { if (this.trial) { this.trial.free(); this.trial = null; } this.harness = null; this.drag = null; },
+  body() { return this.trial && this.trial.agents[0].body; },
+  world() { return this.trial && this.trial.agents[0].world; },
+  setHarness(on) {
+    const w = this.world(), b = this.body();
+    if (!w) return;
+    if (this.harness) { w.removeImpulseJoint(this.harness.joint, true); w.removeRigidBody(this.harness.anchor); this.harness = null; }
+    if (!on) return;
+    const t = b.torso.translation();
+    const anchor = w.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(t.x, 1.21));
+    const joint = w.createImpulseJoint(R.JointData.fixed({ x: 0, y: 0 }, this.tilt, { x: 0, y: 0 }, 0), anchor, b.torso, true);
+    this.harness = { anchor, joint };
+    b.fallen = false;
+  },
+  setTilt(v) { this.tilt = v; if (this.harness) this.setHarness(true); },
+  /** Pointer pressed at world point p: grab the nearest body part. */
+  grab(p) {
+    const b = this.body();
+    if (!b) return false;
+    let best = null, bd = 0.18;
+    for (const part of BIPED.parts) {
+      const rb = b.parts[part.id], t = rb.translation(), a = rb.rotation(), c = Math.cos(-a), s = Math.sin(-a);
+      const lx = (p.x - t.x) * c - (p.y - t.y) * s, ly = (p.x - t.x) * s + (p.y - t.y) * c;
+      let d;
+      if (part.shape === 'capsule') d = Math.hypot(lx, Math.max(0, Math.abs(ly) - part.hh - (part.hand ? 0.06 : 0))) - part.r;
+      else d = Math.hypot(Math.max(0, Math.abs(lx) - part.hx), Math.max(0, Math.abs(ly) - part.hy - (part.head ? 0.5 : 0)));
+      if (d < bd) { bd = d; best = { part, rb, lx, ly }; }
+    }
+    if (!best) return false;
+    this.drag = { rb: best.rb, part: best.part, local: { x: best.lx, y: best.ly }, target: p };
+    // let go of the joints between this part and the torso while you move it
+    this.chain(best.part.id).forEach(id => delete this.override[id]);
+    return true;
+  },
+  /** Joints from a part up to the torso. */
+  chain(partId) {
+    const out = [];
+    let cur = partId;
+    while (cur !== 'torso') { const j = BIPED.joints.find(q => q.b === cur); if (!j) break; out.push(j.id); cur = j.a; }
+    return out;
+  },
+  release() {
+    if (!this.drag) return;
+    const b = this.body();
+    if (this.holding && b) for (const id of this.chain(this.drag.part.id)) { const j = b.joints.find(q => q.spec.id === id); this.override[id] = b.angle(j); }
+    this.drag = null;
+  },
+  pullForce() {   // the mouse acts like a strong spring on the grabbed point (stronger than any motor)
+    const d = this.drag;
+    if (!d) return;
+    const rb = d.rb, t = rb.translation(), a = rb.rotation(), c = Math.cos(a), s = Math.sin(a);
+    const px = t.x + d.local.x * c - d.local.y * s, py = t.y + d.local.x * s + d.local.y * c;
+    const v = rb.linvel(), w = rb.angvel(), vx = v.x - w * (py - t.y), vy = v.y + w * (px - t.x);
+    let fx = 1200 * (d.target.x - px) - 70 * vx, fy = 1200 * (d.target.y - py) - 70 * vy;
+    const m = Math.hypot(fx, fy), cap = 700;   // strong enough to beat the motors, gentle enough not to bend joints past their limits
+    if (m > cap) { fx *= cap / m; fy *= cap / m; }
+    rb.applyImpulseAtPoint({ x: fx * DT, y: fy * DT }, { x: px, y: py }, true);
+    d.point = { x: px, y: py };
+  },
+  step() {
+    if (!this.trial) return;
+    if (this.playing) { this.playT += DT; return; }
+    this.pullForce();
+    const ag = this.trial.agents[0];
+    ag.done = false; ag.body.fallen = false;   // teaching never ends, even if the body falls over
+    this.trial.step();
+  },
+  hold() { const b = this.body(); if (!b) return; for (const j of b.joints) this.override[j.spec.id] = b.angle(j); this.holding = true; renderTeachUI(); },
+  letGo() { for (const k in this.override) delete this.override[k]; this.holding = false; renderTeachUI(); },
+  cycleHand() {
+    this.grip = this.grip === null ? 1 : this.grip === 1 ? -1 : null;
+    if (this.trial) this.trial.gripOverride = this.grip;
+    renderTeachUI();
+  },
+  /* ---- keyframes ---- */
+  loadClip() {
+    const a = agent(), saved = a.demos[App.skill];
+    this.clip = saved ? JSON.parse(JSON.stringify(saved)) : { name: `${a.name}'s ${TASKS[App.skill].name}`, skill: App.skill, loop: App.skill !== 'grab', period: App.skill !== 'grab' ? 1 : 3, keys: [] };
+    this.sel = -1; this.playing = false;
+    renderKeys();
+  },
+  currentPose() {
+    const b = this.body(), p = b.pose();
+    p.torso = this.harness ? this.tilt : p.torso;
+    return p;
+  },
+  addKey(t) {
+    const c = this.clip, pose = this.currentPose(), grip = this.grip === 1 || (this.body().grip ? 1 : 0) ? 1 : 0;
+    const existing = c.keys.findIndex(k => Math.abs(k.t - t) < 1e-6);
+    const key = { t, pose, grip };
+    if (existing >= 0) c.keys[existing] = key; else c.keys.push(key);
+    c.keys.sort((x, y) => x.t - y.t);
+    this.sel = c.keys.indexOf(key);
+    this.fixPeriod(); renderKeys();
+  },
+  fixPeriod() { const c = this.clip; c.period = c.loop ? 1 : Math.max(0.5, c.keys.length ? c.keys[c.keys.length - 1].t : 1); },
+  goToKey(i) {
+    const k = this.clip.keys[i];
+    this.sel = i; this.playing = false;
+    for (const id of POSE_KEYS) if (id !== 'torso') this.override[id] = k.pose[id] !== undefined ? k.pose[id] : REST_POSE[id];
+    this.holding = true;
+    if (k.pose.torso !== undefined) this.setTilt(k.pose.torso);
+    $('#keyTime').value = k.t;
+    renderKeys(); renderTeachUI(); buildJoints();
+  },
+  nextTime() { const c = this.clip, last = c.keys.length ? c.keys[c.keys.length - 1].t : -0.25; return c.loop ? Math.min(0.95, +(last + 0.25).toFixed(2)) : +(last + 0.5).toFixed(2); },
+};
+function renderTeachUI() {
+  $('#holdBtn').classList.toggle('on', Teach.holding);
+  $('#handBtn').textContent = Teach.grip === null ? 'Hand: brain' : Teach.grip === 1 ? 'Hand: closed' : 'Hand: open';
+  $('#handBtn').classList.toggle('on', Teach.grip !== null);
+}
+function renderKeys() {
+  const c = Teach.clip;
+  if (!c) return;
+  $('#teachTitle').textContent = `Demonstration · ${agent().name} · ${TASKS[App.skill].name}${agent().demos[App.skill] ? ' (saved)' : ''}`;
+  $('#clipLoop').checked = !!c.loop;
+  $('#keys').innerHTML = c.keys.length ? c.keys.map((k, i) => `<button class="key" data-i="${i}" aria-pressed="${i === Teach.sel}">${c.loop ? (k.t * 100).toFixed(0) + '%' : k.t.toFixed(2) + ' s'}${k.grip ? '<i>✊</i>' : ''}</button>`).join('')
+    : '<span class="about">No keys yet.</span>';
+  $('#updKey').disabled = $('#delKey').disabled = Teach.sel < 0;
+  $('#playClip').textContent = Teach.playing ? 'Stop' : 'Play';
+  $('#playClip').disabled = c.keys.length < 1;
+  $('#saveClip').disabled = c.keys.length < 1;
+  $('#keyTime').step = c.loop ? 0.05 : 0.1; $('#keyTime').max = c.loop ? 0.95 : 20;
+  if (Teach.sel < 0) $('#keyTime').value = Teach.nextTime();
 }
 
 /* ================= drawing the world ================= */
@@ -380,20 +657,29 @@ function fit(c) {
   if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
   return { ctx: c.getContext('2d'), w, h, d };
 }
+/** What the stage shows: the teach body, the best-scoring training attempt, or the watched body. */
+function shown() {
+  if (App.mode === 'teach') { const t = Teach.trial; return { t, a: t ? t.agents[0] : null, training: false }; }
+  const training = App.mode === 'train' && Train.isShowing() && Train.trial;
+  const t = training ? Train.trial : Watch.trial;
+  if (!t || !t.agents.length) return { t, a: null, training };
+  if (!training) return { t, a: t.agents[0], training };
+  let best = t.agents[0], bs = -Infinity;
+  for (const a of t.agents) { const sc = a.fitness !== undefined ? a.fitness - 50 : t.score(a); if (sc > bs) { bs = sc; best = a; } }
+  return { t, a: best, training };
+}
 function drawWorld() {
   const c = $('#view'), { ctx, w, h, d } = fit(c);
   const { t: trial, a: lead, training } = shown();
   ctx.fillStyle = '#0d0f12'; ctx.fillRect(0, 0, w, h);
   if (!lead) return;
-  const focus = lead;
-  const s = View.scale = h / 2.5, gy = h * 0.86;
-  const tx = focus.body.pos().x;
-  View.camX += ((App.skill === 'walk' ? tx + 0.6 : 0.25) - View.camX) * 0.08;
+  const s = View.scale = h / 2.5, gy = h * 0.86, mono = css('--mono');
+  const tx = lead.body.pos().x;
+  if (App.mode !== 'teach') View.camX += ((App.skill === 'walk' ? tx + 0.6 : 0.25) - View.camX) * 0.08;
   const X = x => w / 2 + (x - View.camX) * s, Y = y => gy - y * s;
-  View.X = X; View.Y = Y;
+  View.X = X; View.Y = Y; View.w = w; View.h = h; View.gy = gy;
 
   // ground with metre marks
-  const mono = css('--mono');
   ctx.strokeStyle = '#1f242b'; ctx.lineWidth = d;
   const left = View.camX - w / 2 / s, right = View.camX + w / 2 / s;
   for (let x = Math.floor(left * 4) / 4; x < right; x += 0.25) { ctx.beginPath(); ctx.moveTo(X(x), gy); ctx.lineTo(X(x) - 8 * d, gy + 8 * d); ctx.stroke(); }
@@ -401,14 +687,30 @@ function drawWorld() {
   ctx.fillStyle = '#5a5f68'; ctx.font = `${10 * d}px ${mono}`; ctx.textAlign = 'center';
   for (let x = Math.ceil(left); x < right; x++) { ctx.fillRect(X(x) - d / 2, gy, d, 6 * d); ctx.fillText(`${x} m`, X(x), gy + 20 * d); }
   ctx.textAlign = 'left';
+  // obstacles
+  for (const o of trial.terrain || []) {
+    if (o.x + o.w < left || o.x - o.w > right) continue;
+    ctx.fillStyle = o.kind === 'log' ? '#5a4232' : '#7a5a3a'; ctx.strokeStyle = o.kind === 'log' ? '#8a6a4f' : '#9a7a52'; ctx.lineWidth = d;
+    const r = Math.min(o.h, o.w) * s * 0.45;
+    ctx.beginPath(); ctx.roundRect(X(o.x - o.w / 2), Y(o.h), o.w * s, o.h * s, r); ctx.fill(); ctx.stroke();
+    if (o.kind === 'log') { ctx.strokeStyle = '#8a6a4f'; ctx.beginPath(); ctx.arc(X(o.x + o.w / 2) - r, Y(o.h / 2), Math.max(1, r * 0.5), 0, 7); ctx.stroke(); }
+  }
 
   if (training) {
-    // every brain in this generation at once, faint; the leader solid
     for (const a of trial.agents) if (a !== lead) { drawObjects(ctx, a, d, 0.12); drawBody(ctx, a.body, d, 0.16, false); }
     drawObjects(ctx, lead, d, 1); drawBody(ctx, lead.body, d, 1, true);
   } else {
-    drawObjects(ctx, trial.agents[0], d, 1);
-    drawBody(ctx, trial.agents[0].body, d, 1, true);
+    drawObjects(ctx, lead, d, 1);
+    // the ideal as a ghost, aligned with the body's torso
+    if (App.mode === 'teach' && Teach.playing && Teach.clip.keys.length) { const t = lead.body.torso.translation(); drawGhost(ctx, clipPose(Teach.clip, Teach.playT), t.x, t.y, d, 'YOUR DEMO'); }
+    else if (App.mode === 'watch' && App.ghost) { const t = lead.body.torso.translation(); drawGhost(ctx, clipPose(REFERENCE[App.skill], trial.time), t.x, t.y, d, 'IDEAL'); }
+    drawBody(ctx, lead.body, d, App.mode === 'teach' && Teach.playing ? 0.35 : 1, true);
+  }
+  // teaching: harness and drag line
+  if (App.mode === 'teach') {
+    if (Teach.harness) { const p = Teach.harness.anchor.translation(); ctx.strokeStyle = 'rgba(232,230,225,.35)'; ctx.setLineDash([4 * d, 4 * d]); ctx.lineWidth = d; ctx.beginPath(); ctx.moveTo(X(p.x), 0); ctx.lineTo(X(p.x), Y(p.y)); ctx.stroke(); ctx.setLineDash([]); }
+    const dr = Teach.drag;
+    if (dr && dr.point) { ctx.strokeStyle = css('--signal'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.moveTo(X(dr.point.x), Y(dr.point.y)); ctx.lineTo(X(dr.target.x), Y(dr.target.y)); ctx.stroke(); ctx.fillStyle = css('--signal'); ctx.beginPath(); ctx.arc(X(dr.target.x), Y(dr.target.y), 4 * d, 0, 7); ctx.fill(); }
   }
   // shove arrow
   if (View.shove && performance.now() - View.shove.t < 400) {
@@ -420,9 +722,10 @@ function drawWorld() {
   ctx.font = `${11 * d}px ${mono}`; ctx.fillStyle = '#8a8f98';
   const a = agent();
   const cap = training ? `TRAINING · ${a.name} · ${TASKS[Train.skill].name} · generation ${Train.evo.generation + 1} · try ${Train.ep + 1}/${Train.episodes.length} · ${trial.time.toFixed(1)} s`
+    : App.mode === 'teach' ? `TEACHING · ${a.name} · ${TASKS[App.skill].name} · brain is on (it fights you) · nothing is learned`
     : `${a.name} · ${TASKS[App.skill].name} · ${trial.time.toFixed(1)} s`;
   ctx.fillText(cap.toUpperCase(), 14 * d, 22 * d);
-  if (training) { ctx.fillStyle = '#5a5f68'; ctx.fillText(`${trial.agents.length} VARIATIONS AT ONCE (FAINT) · LEADER (SOLID)`, 14 * d, 38 * d); }
+  if (training) { ctx.fillStyle = '#5a5f68'; ctx.fillText(`${trial.agents.length} VARIATIONS AT ONCE (FAINT) · BEST RIGHT NOW (SOLID)${Train.imitate ? ' · IMITATING ' + Train.imitate.name.toUpperCase() : ''}`, 14 * d, 38 * d); }
 }
 
 function drawObjects(ctx, a, d, alpha) {
@@ -430,74 +733,90 @@ function drawObjects(ctx, a, d, alpha) {
   if (!st || !st.table) return;
   ctx.globalAlpha = alpha;
   const t = st.table.translation();
-  ctx.fillStyle = '#2a2420'; ctx.strokeStyle = '#4a3f36'; ctx.lineWidth = d;
-  ctx.fillRect(X(t.x - 0.14), Y(st.top), 0.28 * s, st.top * s); ctx.strokeRect(X(t.x - 0.14), Y(st.top), 0.28 * s, st.top * s);
-  // the glass, and its water
+  // a small wall shelf, hung from above by a rod at its far end
+  ctx.strokeStyle = '#4a4f58'; ctx.lineWidth = 1.5 * d;
+  ctx.beginPath(); ctx.moveTo(X(t.x + TABLE.hx - 0.006), Y(st.top)); ctx.lineTo(X(t.x + TABLE.hx - 0.006), 0); ctx.stroke();
+  ctx.fillStyle = '#3a3029'; ctx.strokeStyle = '#5a4b3e'; ctx.lineWidth = d;
+  ctx.fillRect(X(t.x - TABLE.hx), Y(st.top), TABLE.hx * 2 * s, TABLE.hy * 2 * s); ctx.strokeRect(X(t.x - TABLE.hx), Y(st.top), TABLE.hx * 2 * s, TABLE.hy * 2 * s);
   const g = st.glass, p = g.translation(), ang = g.rotation();
   ctx.save(); ctx.translate(X(p.x), Y(p.y)); ctx.rotate(-ang);
   const gw = GLASS.hx * s, gh = GLASS.hy * s;
-  if (!st.spilled) {
-    // water stays level while the glass tilts
+  if (!st.spilled) {   // water stays level while the glass tilts
     ctx.save(); ctx.beginPath(); ctx.rect(-gw, -gh, gw * 2, gh * 2); ctx.clip();
     ctx.rotate(ang); ctx.fillStyle = 'rgba(74,163,255,.75)'; ctx.fillRect(-gw * 3, -gh * 0.35, gw * 6, gh * 4); ctx.restore();
   }
   ctx.strokeStyle = 'rgba(232,230,225,.9)'; ctx.lineWidth = 1.5 * d;
   ctx.beginPath(); ctx.moveTo(-gw, -gh); ctx.lineTo(-gw * 0.85, gh); ctx.lineTo(gw * 0.85, gh); ctx.lineTo(gw, -gh); ctx.stroke();
   ctx.restore();
-  if (st.spilled) {   // a puddle where it went over
-    if (!st.puddle) st.puddle = { x: p.x, y: p.y < st.top + 0.2 && Math.abs(p.x - t.x) < 0.16 ? st.top : 0 };
+  if (st.spilled) {
+    if (!st.puddle) st.puddle = { x: p.x, y: p.y < st.top + 0.2 && Math.abs(p.x - t.x) < TABLE.hx + 0.02 ? st.top : 0 };
     ctx.fillStyle = 'rgba(74,163,255,.5)'; ctx.beginPath(); ctx.ellipse(X(st.puddle.x), Y(st.puddle.y), 0.14 * s, 0.012 * s, 0, 0, 7); ctx.fill();
   }
   ctx.globalAlpha = 1;
 }
 
-function drawBody(ctx, body, d, alpha, detail) {
+/** Draws a body from part transforms { id: {x, y, a} } (used for both real bodies and ghosts). */
+function drawParts(ctx, P, d, style) {
   const X = View.X, Y = View.Y, s = View.scale;
-  ctx.globalAlpha = alpha; ctx.lineCap = 'round';
-  const seg = (rb, hh, r, col) => {
-    const t = rb.translation(), a = rb.rotation(), dx = -Math.sin(a) * hh, dy = Math.cos(a) * hh;
-    ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.5 * d, r * 2 * s);
+  ctx.lineCap = 'round';
+  const byId = {}; for (const p of BIPED.parts) byId[p.id] = p;
+  const seg = (id, col) => {
+    const t = P[id], sp = byId[id], dx = -Math.sin(t.a) * sp.hh, dy = Math.cos(t.a) * sp.hh;
+    ctx.strokeStyle = col; ctx.lineWidth = style.outline ? 1.5 * d : Math.max(1.5 * d, sp.r * 2 * s);
     ctx.beginPath(); ctx.moveTo(X(t.x + dx), Y(t.y + dy)); ctx.lineTo(X(t.x - dx), Y(t.y - dy)); ctx.stroke();
   };
-  const box = (rb, hx, hy, col) => {
-    const t = rb.translation(), a = rb.rotation();
-    ctx.save(); ctx.translate(X(t.x), Y(t.y)); ctx.rotate(-a); ctx.fillStyle = col; ctx.fillRect(-hx * s, -hy * s, hx * 2 * s, hy * 2 * s); ctx.restore();
+  const box = (id, col) => {
+    const t = P[id], sp = byId[id];
+    ctx.save(); ctx.translate(X(t.x), Y(t.y)); ctx.rotate(-t.a);
+    if (style.outline) { ctx.strokeStyle = col; ctx.lineWidth = 1.5 * d; ctx.strokeRect(-sp.hx * s, -sp.hy * s, sp.hx * 2 * s, sp.hy * 2 * s); }
+    else { ctx.fillStyle = col; ctx.fillRect(-sp.hx * s, -sp.hy * s, sp.hx * 2 * s, sp.hy * 2 * s); }
+    ctx.restore();
   };
-  const P = body.parts, far = '#4a5260', near = detail ? '#e8e6e1' : '#9aa0aa';
-  const accent = agent().color;
+  const ball = (x, y, r, col) => { ctx.beginPath(); ctx.arc(X(x), Y(y), r * s, 0, 7); if (style.outline) { ctx.strokeStyle = col; ctx.lineWidth = 1.5 * d; ctx.stroke(); } else { ctx.fillStyle = col; ctx.fill(); } };
   for (const side of ['L', 'R']) {
-    const col = side === 'L' ? far : near;
-    if (side === 'R') { // torso and head between the two sides
-      box(P.torso, 0.11, 0.28, detail ? '#c9c6bf' : '#8a8f98');
-      const t = P.torso.translation(), a = P.torso.rotation();
-      ctx.fillStyle = detail ? accent : '#8a8f98'; ctx.beginPath(); ctx.arc(X(t.x - Math.sin(a) * 0.40), Y(t.y + Math.cos(a) * 0.40), 0.10 * s, 0, 7); ctx.fill();
+    const col = side === 'L' ? style.far : style.near;
+    if (side === 'R') {
+      box('torso', style.torso);
+      const t = P.torso; ball(t.x - Math.sin(t.a) * 0.40, t.y + Math.cos(t.a) * 0.40, 0.10, style.head);
     }
-    seg(P['thigh' + side], 0.15, 0.06, col); seg(P['shin' + side], 0.165, 0.045, col); box(P['foot' + side], 0.12, 0.03, col);
-    seg(P['upper' + side], 0.11, 0.04, col); seg(P['fore' + side], 0.105, 0.035, col);
-    const f = P['fore' + side], ft = f.translation(), fa = f.rotation();
-    const hx = ft.x + Math.sin(fa) * 0.16, hy = ft.y - Math.cos(fa) * 0.16;
-    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(hx), Y(hy), 0.045 * s, 0, 7); ctx.fill();
-    if (side === 'R' && body.grip && detail) { ctx.strokeStyle = css('--hue'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.arc(X(hx), Y(hy), 0.07 * s, 0, 7); ctx.stroke(); }
+    seg('thigh' + side, col); seg('shin' + side, col); box('foot' + side, col);
+    seg('upper' + side, col); seg('fore' + side, col);
+    const f = P['fore' + side]; ball(f.x + Math.sin(f.a) * 0.16, f.y - Math.cos(f.a) * 0.16, 0.045, col);
   }
-  if (detail) {   // motor effort arcs on the near-side joints and hips
+}
+function drawGhost(ctx, pose, tx, ty, d, label) {
+  const g = css('--ghost');
+  ctx.globalAlpha = 0.8; ctx.setLineDash([5 * d, 3 * d]);
+  drawParts(ctx, poseParts(pose, tx, ty), d, { outline: true, far: 'rgba(154,215,255,.45)', near: g, torso: g, head: g });
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  ctx.fillStyle = g; ctx.font = `${10 * d}px ${css('--mono')}`;
+  ctx.fillText(label, View.X(tx) + 0.25 * View.scale, View.Y(ty + 0.62));
+}
+function drawBody(ctx, body, d, alpha, detail) {
+  const P = {};
+  for (const id in body.parts) { const t = body.parts[id].translation(); P[id] = { x: t.x, y: t.y, a: body.parts[id].rotation() }; }
+  ctx.globalAlpha = alpha;
+  const accent = agent().color;
+  drawParts(ctx, P, d, { far: '#4a5260', near: detail ? '#e8e6e1' : '#9aa0aa', torso: detail ? '#c9c6bf' : '#8a8f98', head: detail ? accent : '#8a8f98' });
+  const X = View.X, Y = View.Y, s = View.scale;
+  if (body.grip && detail) { const h = body.handPos(); ctx.strokeStyle = css('--hue'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.arc(X(h.x), Y(h.y), 0.07 * s, 0, 7); ctx.stroke(); }
+  if (detail) {   // motor effort arcs on the near-side joints; held joints (teaching) ringed in orange
     for (const j of body.joints) {
-      if (j.spec.id.endsWith('L')) continue;
+      const held = App.mode === 'teach' && Teach.override[j.spec.id] !== undefined;
+      if (j.spec.id.endsWith('L') && !held) continue;
       const pa = BIPED.parts.find(p => p.id === j.spec.a), rb = j.a, t = rb.translation(), a = rb.rotation();
       const lx = j.spec.x - pa.x, ly = j.spec.y - pa.y, wx = t.x + lx * Math.cos(a) - ly * Math.sin(a), wy = t.y + lx * Math.sin(a) + ly * Math.cos(a);
       const eff = effort(body, j);
       ctx.strokeStyle = 'rgba(255,106,61,.95)'; ctx.lineWidth = 2 * d;
       ctx.beginPath(); ctx.arc(X(wx), Y(wy), 0.075 * s, -Math.PI / 2, -Math.PI / 2 - eff * 2.6, eff > 0); ctx.stroke();
-      ctx.fillStyle = '#0d0f12'; ctx.strokeStyle = '#e8e6e1'; ctx.lineWidth = 1.4 * d;
-      ctx.beginPath(); ctx.arc(X(wx), Y(wy), 0.022 * s, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = held ? css('--signal') : '#0d0f12'; ctx.strokeStyle = '#e8e6e1'; ctx.lineWidth = 1.4 * d;
+      ctx.beginPath(); ctx.arc(X(wx), Y(wy), (held ? 0.03 : 0.022) * s, 0, 7); ctx.fill(); ctx.stroke();
     }
   }
   ctx.globalAlpha = 1;
 }
 /** How hard a joint's motor is pushing, -1..1 of its strength (approximate: the spring part of the motor). */
-function effort(body, j) {
-  const s = j.spec, err = j.target - body.angle(j);
-  return Math.max(-1, Math.min(1, (s.k * err) / s.max));
-}
+function effort(body, j) { const s = j.spec; return Math.max(-1, Math.min(1, (s.k * (j.target - body.angle(j))) / s.max)); }
 
 /* ================= side panels ================= */
 const OUT_NAMES = BIPED.joints.map(j => j.id).concat('grip');
@@ -517,12 +836,11 @@ function drawBrain() {
       ctx.strokeStyle = sig > 0 ? `rgba(255,106,61,${m * 0.6})` : `rgba(160,170,185,${m * 0.35})`;
       ctx.lineWidth = (0.4 + m) * d; ctx.beginPath(); ctx.moveTo(...pos[k - 1][i]); ctx.lineTo(...pos[k][j]); ctx.stroke();
     }
-    pi++;   // bias
+    pi++;
   }
-  const mono = css('--mono');
-  ctx.font = `${9.5 * d}px ${mono}`;
+  ctx.font = `${9.5 * d}px ${css('--mono')}`;
   A.forEach((layer, k) => layer.forEach((v, i) => {
-    const [x, y] = pos[k][i], r = (k === 0 ? 2.6 : 4) * d;
+    const [x, y] = pos[k][i], r = (k === 0 ? 2.4 : 3.6) * d;
     ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fillStyle = '#0a0b0d'; ctx.fill();
     ctx.strokeStyle = '#3a3f47'; ctx.lineWidth = d; ctx.stroke();
     const m = Math.min(1, Math.abs(v));
@@ -535,15 +853,37 @@ function drawBrain() {
 }
 
 function buildJoints() {
-  $('#joints').innerHTML = BIPED.joints.map(j => `<span class="n">${j.id}</span><span class="jbar" id="jb-${j.id}"><s></s><i></i><u></u></span><span class="v" id="jv-${j.id}"></span>`).join('');
+  const teach = App.mode === 'teach';
+  $('#jointsTitle').textContent = teach ? 'Joints · drag a slider to set and hold that joint (orange = held by you)' : 'Joints · angle (white), motor target (orange), effort';
+  const rows = BIPED.joints.map(j => teach
+    ? `<span class="n" id="jn-${j.id}">${j.id}</span><input type="range" id="js-${j.id}" min="${j.lo}" max="${j.hi}" step="0.01" value="${Teach.override[j.id] !== undefined ? Teach.override[j.id] : j.rest}"><span class="v" id="jv-${j.id}"></span>`
+    : `<span class="n">${j.id}</span><span class="jbar" id="jb-${j.id}"><s></s><i></i><u></u></span><span class="v" id="jv-${j.id}"></span>`);
+  if (teach) rows.unshift(`<span class="n">torso tilt</span><input type="range" id="js-torso" min="-1.0" max="0.6" step="0.01" value="${Teach.tilt}" title="Needs the harness"><span class="v" id="jv-torso"></span>`);
+  $('#joints').innerHTML = rows.join('');
+  if (teach) {
+    for (const j of BIPED.joints) $('#js-' + j.id).addEventListener('input', e => { Teach.override[j.id] = +e.target.value; });
+    $('#js-torso').addEventListener('input', e => { if (!$('#harnessOn').checked) { $('#harnessOn').checked = true; } Teach.setTilt(+e.target.value); });
+  }
 }
 function updateJoints() {
   const { a: lead } = shown();
   if (!lead) return;
   const body = lead.body;
+  if (App.mode === 'teach') {
+    for (const j of body.joints) {
+      const id = j.spec.id, held = Teach.override[id] !== undefined, sl = document.getElementById('js-' + id);
+      if (!sl) continue;
+      document.getElementById('jn-' + id).classList.toggle('held', held);
+      if (document.activeElement !== sl) sl.value = held ? Teach.override[id] : body.angle(j);
+      document.getElementById('jv-' + id).textContent = `${Math.round(body.angle(j) * 57.3)}°`;
+    }
+    const tv = document.getElementById('jv-torso'); if (tv) tv.textContent = `${Math.round(wrap(body.torso.rotation()) * 57.3)}°`;
+    return;
+  }
   for (const j of body.joints) {
     const s = j.spec, f = v => ((v - s.lo) / (s.hi - s.lo)) * 100, ang = body.angle(j), eff = effort(body, j);
     const bar = document.getElementById('jb-' + s.id);
+    if (!bar) continue;
     bar.children[1].style.left = `calc(${Math.max(0, Math.min(100, f(ang)))}% - 1px)`;
     bar.children[2].style.left = `calc(${Math.max(0, Math.min(100, f(j.target)))}% - 1px)`;
     const e = Math.abs(eff) * 50; bar.children[0].style.left = (eff >= 0 ? 50 : 50 - e) + '%'; bar.children[0].style.width = e + '%';
@@ -554,9 +894,8 @@ function updateJoints() {
 function drawChart() {
   const c = $('#chart'), { ctx, w, h, d } = fit(c);
   ctx.clearRect(0, 0, w, h);
-  const s = agent().skills[App.skill], hist = Train.running && Train.agentId === App.agentId && Train.skill === App.skill ? Train.evo.history : s ? s.history : [];
-  const mono = css('--mono');
-  ctx.font = `${10 * d}px ${mono}`; ctx.fillStyle = '#5a5f68';
+  const s = agent().skills[App.skill], hist = Train.isShowing() ? Train.evo.history : s ? s.history : [];
+  ctx.font = `${10 * d}px ${css('--mono')}`; ctx.fillStyle = '#5a5f68';
   if (hist.length < 2) { ctx.fillText('No training yet for this skill.', 6 * d, h / 2); return; }
   const g0 = hist[0][0], g1 = hist[hist.length - 1][0];
   let lo = Infinity, hi = -Infinity;
@@ -571,55 +910,103 @@ function drawChart() {
 }
 
 function renderStatus() {
-  const a = agent(), s = a.skills[App.skill];
-  const live = Train.running && Train.agentId === a.id && Train.skill === App.skill;
+  const a = agent(), s = a.skills[App.skill], live = Train.isShowing();
   const gen = live ? Train.evo.generation : s ? s.generation : 0;
   $('#stGen').textContent = gen;
   $('#stBest').textContent = live && Train.evo.bestFitness > -Infinity ? Train.evo.bestFitness.toFixed(2) : s && s.history.length ? s.history[s.history.length - 1][1].toFixed(2) : '—';
-  const hd = hardness(gen);
-  $('#stHard').textContent = hd >= 1 ? 'Full' : `${Math.round(hd * 100)}%`;
-  $('#skillNote').innerHTML = SKILL_NOTES[App.skill] + (!s ? (App.skill !== 'stand' && a.skills.stand ? ' <br><span class="mono" style="color:var(--signal)">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="mono" style="color:var(--signal)">Not trained yet: this brain is random.</span>') : '');
+  const hd = hardness(gen), parts = [hd >= 1 ? 'full' : `${Math.round(hd * 100)}%`];
+  if (App.skill === 'walk') parts.push(`obstacles ${Math.round(terrainLevel(gen) * 100)}%`);
+  if (App.skill === 'grab') parts.push(`assist ${Math.round(gripAssist(gen) * 100)}%`);
+  $('#stHard').textContent = parts.join(' · ');
+  const tst = a.tests[App.skill];
+  if (!Test.running) {
+    $('#stSuccess').textContent = tst ? `${tst.ok}/${tst.n}` : '—';
+    $('#stSuccessNote').textContent = tst ? `${TASKS[App.skill].successText} (gen ${tst.generation})` : 'press Test 10 runs';
+  }
+  let note = SKILL_NOTES[App.skill];
+  if (!s) note += App.skill !== 'stand' && a.skills.stand ? ' <br><span class="warn">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="warn">Not trained yet: this brain is random, so the body just collapses. Train it!</span>';
+  if (imitationFor(a, App.skill)) note += ` <br><span class="warn" style="color:var(--ghost)">Training will also reward moving like: ${esc(imitationFor(a, App.skill).name)}.</span>`;
+  $('#skillNote').innerHTML = note;
+  const lf = a.learnFrom[App.skill] || 'none';
+  $('#learnFrom').value = lf;
+  $('#learnFrom').querySelector('option[value=demo]').disabled = !a.demos[App.skill];
+  $('#learnFrom').querySelector('option[value=demo]').textContent = a.demos[App.skill] ? `My demonstration (${a.demos[App.skill].keys.length} keys)` : 'My demonstration (record one in Teach)';
 }
 function renderOutcome() {
   const { t, a, training } = shown();
   if (!a) return;
-  $('#stOutLabel').textContent = training ? 'Leader right now' : 'Right now';
-  $('#stOut').textContent = t.task.describe(a.st, a.body);
+  $('#stOutLabel').textContent = training ? 'Best right now' : 'Right now';
+  $('#stOut').textContent = App.mode === 'teach' ? (a.body.grip ? 'holding the glass' : 'being taught') : t.task.describe(a.st, a.body);
+  $('#stEnergy').textContent = `${Math.round(a.body.work)} J · ${Math.round(a.body.power)} W`;
 }
 
 /* ================= UI wiring ================= */
 function refreshAgents() {
-  $('#agentPick').innerHTML = App.agents.map(a => `<option value="${a.id}" ${a.id === App.agentId ? 'selected' : ''}>${a.name.replace(/[<&>"]/g, '')}${a.starter ? ' (starter)' : ''}</option>`).join('');
+  $('#agentPick').innerHTML = App.agents.map(a => `<option value="${a.id}" ${a.id === App.agentId ? 'selected' : ''}>${esc(a.name)}${a.starter ? ' (trained example)' : Object.keys(a.skills).length ? '' : ' (untrained)'}</option>`).join('');
   $('#skillTabs').innerHTML = SKILLS.map(k => {
     const s = agent().skills[k];
     return `<button data-skill="${k}" aria-pressed="${k === App.skill}">${TASKS[k].name}${s ? ` · ${s.generation}` : ''}</button>`;
   }).join('');
 }
 function select(changes) {
-  if (Train.running && (changes.agentId || changes.skill)) Train.stop();
+  const prevMode = App.mode;
   Object.assign(App, changes);
-  refreshAgents(); renderStatus();
+  refreshAgents(); renderStatus(); renderTrainUI();
   $('#modeTabs').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === App.mode));
   $('#watchCtl').hidden = App.mode !== 'watch'; $('#trainCtl').hidden = App.mode !== 'train';
-  $('#stageHint').textContent = App.mode === 'watch' ? 'Click near the body to shove it' : '';
-  if (App.mode === 'watch' || changes.agentId || changes.skill) startWatch();
+  $('#teachCtl').hidden = App.mode !== 'teach'; $('#teachPanel').hidden = App.mode !== 'teach';
+  $('#stage').classList.toggle('teach', App.mode === 'teach');
+  $('#stageHint').textContent = App.mode === 'watch' ? 'Click near the body to shove it'
+    : App.mode === 'teach' ? 'Drag any part of the body · the brain keeps fighting you · nothing here changes its brain' : Train.running && !Train.isShowing() ? 'Training another skill or agent in the background' : '';
+  if (App.mode === 'teach') { if (prevMode !== 'teach' || changes.agentId || changes.skill) Teach.start(); }
+  else Teach.stopTrial();
+  if (App.mode !== 'teach' && (prevMode !== App.mode || changes.agentId || changes.skill || !Watch.trial)) startWatch();
+  if (prevMode !== App.mode || changes.mode) buildJoints();
+  renderTeachUI(); renderKeys();
   markDirty();
 }
 
+function worldPoint(e) {
+  const c = $('#view'), r = c.getBoundingClientRect(), d = c.width / r.width, px = (e.clientX - r.left) * d, py = (e.clientY - r.top) * d;
+  return { px, py, x: View.camX + (px - View.w / 2) / View.scale, y: (View.gy - py) / View.scale };
+}
 function wire() {
   $('#agentPick').onchange = e => select({ agentId: e.target.value });
   $('#skillTabs').onclick = e => { const b = e.target.closest('button'); if (b) select({ skill: b.dataset.skill }); };
-  $('#modeTabs').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== App.mode) { if (b.dataset.mode === 'watch') Train.stop(); select({ mode: b.dataset.mode }); } };
+  $('#modeTabs').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== App.mode) select({ mode: b.dataset.mode }); };
   $('#restart').onclick = startWatch;
+  $('#testBtn').onclick = () => Test.start();
+  $('#ghostOn').onchange = e => { App.ghost = e.target.checked; markDirty(); };
   $('#speed').onchange = e => { Train.budget = +e.target.value; };
-  $('#trainBtn').onclick = () => { if (Train.running) { Train.stop(); refreshAgents(); } else Train.start(); };
+  $('#learnFrom').onchange = e => { agent().learnFrom[App.skill] = e.target.value; markDirty(); renderStatus(); if (Train.isShowing()) toast('Applies the next time you start training.'); };
+  $('#trainBtn').onclick = () => { if (Train.isShowing()) Train.stop(); else Train.start(); };
+  $('#trainBadge').onclick = () => Train.stop();
+  // teach controls
+  $('#harnessOn').onchange = e => Teach.setHarness(e.target.checked);
+  $('#holdBtn').onclick = () => Teach.hold();
+  $('#letGoBtn').onclick = () => Teach.letGo();
+  $('#handBtn').onclick = () => Teach.cycleHand();
+  $('#standUp').onclick = () => { Teach.start(); };
+  $('#clipLoop').onchange = e => { Teach.clip.loop = e.target.checked; if (Teach.clip.loop) Teach.clip.keys = Teach.clip.keys.filter(k => k.t < 1); Teach.fixPeriod(); renderKeys(); };
+  $('#loadRef').onclick = () => { Teach.clip = JSON.parse(JSON.stringify(REFERENCE[App.skill])); Teach.clip.name = `${agent().name}'s ${TASKS[App.skill].name}`; Teach.sel = -1; renderKeys(); toast('Loaded the reference. Edit its keys, then save it as your own.'); };
+  $('#clearClip').onclick = () => { Teach.clip.keys = []; Teach.sel = -1; Teach.playing = false; renderKeys(); };
+  $('#keys').onclick = e => { const b = e.target.closest('.key'); if (b) Teach.goToKey(+b.dataset.i); };
+  $('#addKey').onclick = () => { const t = Math.max(0, +$('#keyTime').value || 0); if (Teach.clip.loop && t >= 1) return toast('Looping clips go from 0 to 0.95 (one 1 s cycle).'); Teach.addKey(+t.toFixed(2)); };
+  $('#updKey').onclick = () => { if (Teach.sel >= 0) { Teach.clip.keys.splice(Teach.sel, 1); Teach.addKey(+(+$('#keyTime').value).toFixed(2)); } };
+  $('#delKey').onclick = () => { if (Teach.sel >= 0) { Teach.clip.keys.splice(Teach.sel, 1); Teach.sel = -1; Teach.fixPeriod(); renderKeys(); } };
+  $('#playClip').onclick = () => { Teach.playing = !Teach.playing; Teach.playT = 0; renderKeys(); };
+  $('#saveClip').onclick = () => {
+    const c = JSON.parse(JSON.stringify(Teach.clip)); c.id = 'demo-' + App.skill; Teach.fixPeriod(); c.period = Teach.clip.period;
+    agent().demos[App.skill] = c; markDirty(); renderKeys(); renderStatus();
+    toast('Saved. To use it, go to Train and pick "Learn from: My demonstration".', 4000);
+  };
+  // agents
   $('#newAgent').onclick = () => { $('#newName').value = NAMES.find(n => !App.agents.some(a => a.name === n)) || 'Agent'; $('#newDlg').showModal(); $('#newName').select(); };
   $('#newDlg').addEventListener('close', () => {
     if ($('#newDlg').returnValue !== 'ok') return;
-    const name = $('#newName').value.trim().slice(0, 24) || 'Agent';
-    const a = { id: 'a' + Date.now().toString(36), name, seed: (Math.random() * 1e9) >>> 0, color: COLORS[App.agents.length % COLORS.length], skills: {} };
-    App.agents.push(a); select({ agentId: a.id, skill: 'stand', mode: 'watch' });
-    toast(`${name} knows nothing yet. Switch to Train to teach it to stand.`, 4000);
+    const a = blankAgent($('#newName').value.trim().slice(0, 24) || 'Agent', App.agents.length);
+    App.agents.unshift(a); select({ agentId: a.id, skill: 'stand', mode: 'watch' });
+    toast(`${a.name} knows nothing yet. Switch to Train to teach it to stand.`, 4000);
   });
   $('#exportBtn').onclick = () => {
     const a = agent(), blob = new Blob([JSON.stringify(agentToJSON(a), null, 1)], { type: 'application/json' });
@@ -635,23 +1022,33 @@ function wire() {
     if (j.format === 'glassbox-body-brain') {
       const r = brainFromJSON(j);
       if (!r.ok) return toast(r.error);
-      if (r.brain.bodyPlan !== BIPED.id || r.brain.sizes.join() !== SIZES.join() || !SKILLS.includes(r.brain.skill)) return toast('That brain is for a different body or skill.');
+      if (r.brain.bodyPlan !== BIPED.id || r.brain.sizes.join() !== SIZES.join() || !SKILLS.includes(r.brain.skill)) return toast('That brain is for a different body, sense layout or skill.');
       agent().skills[r.brain.skill] = skillFromBrain(r.brain); select({ skill: r.brain.skill });
       return toast(`Loaded ${r.brain.name}'s ${TASKS[r.brain.skill].name} brain into ${agent().name}.`);
     }
     const a = agentFromJSON(j, App.agents.length);
     if (!a) return toast('Not a Glass Box Embodied 2D agent file.');
-    App.agents.push(a); select({ agentId: a.id }); toast(`Imported ${a.name}.`);
+    App.agents.push(a); select({ agentId: a.id });
+    toast(j.bodyPlan === BIPED.id ? `Imported ${a.name}.` : `Imported ${a.name}'s demonstrations; its brains were for an older body and were left out.`, 4000);
   };
-  // shove: click near the body
-  $('#view').addEventListener('pointerdown', e => {
-    if (App.mode !== 'watch' || !Watch.trial || !View.X) return;
-    const r = e.target.getBoundingClientRect(), d = e.target.width / r.width, px = (e.clientX - r.left) * d, py = (e.clientY - r.top) * d;
-    const body = Watch.trial.agents[0].body, t = body.torso.translation();
-    const dir = px < View.X(t.x) ? 1 : -1;
+  // stage: shove (watch) or drag limbs (teach)
+  const view = $('#view');
+  view.addEventListener('pointerdown', e => {
+    if (!View.X) return;
+    const p = worldPoint(e);
+    if (App.mode === 'teach') {
+      if (Teach.playing) { Teach.playing = false; renderKeys(); }
+      if (Teach.grab(p)) { view.setPointerCapture(e.pointerId); $('#stage').classList.add('dragging'); }
+      return;
+    }
+    if (App.mode !== 'watch' || !Watch.trial) return;
+    const body = Watch.trial.agents[0].body, t = body.torso.translation(), dir = p.px < View.X(t.x) ? 1 : -1;
     body.torso.applyImpulse({ x: dir * 45, y: 0 }, true);
-    View.shove = { x: View.X(t.x) - dir * 0.15 * View.scale, y: py, dir, t: performance.now() };
+    View.shove = { x: View.X(t.x) - dir * 0.15 * View.scale, y: p.py, dir, t: performance.now() };
   });
+  view.addEventListener('pointermove', e => { if (App.mode === 'teach' && Teach.drag) { const p = worldPoint(e); Teach.drag.target = { x: p.x, y: p.y }; } });
+  const up = () => { if (Teach.drag) { Teach.release(); $('#stage').classList.remove('dragging'); } };
+  view.addEventListener('pointerup', up); view.addEventListener('pointercancel', up);
 }
 
 /* ================= main loop ================= */
@@ -659,19 +1056,25 @@ let last = 0, acc = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
-  if (App.mode === 'train' && Train.running) Train.tick();
-  else { acc += dt; let n = 0; while (acc >= DT && n++ < 4) { stepWatch(); acc -= DT; } }
+  Train.tick();
+  Test.tick();
+  if (!(App.mode === 'train' && Train.isShowing())) {
+    acc += dt; let n = 0;
+    while (acc >= DT && n++ < 4) { if (App.mode === 'teach') Teach.step(); else stepWatch(); acc -= DT; }
+  }
   drawWorld(); drawBrain(); updateJoints(); renderOutcome();
-  if (now - (frame.slow || 0) > 500) { frame.slow = now; drawChart(); if (Train.running) refreshTabsLight(); }
+  if (now - (frame.slow || 0) > 500) { frame.slow = now; drawChart(); if (Train.running) { renderTrainUI(); if (Train.isShowing()) refreshTabsLight(); } }
 }
 function refreshTabsLight() { const b = $(`#skillTabs button[data-skill="${Train.skill}"]`); if (b) b.textContent = `${TASKS[Train.skill].name} · ${Train.evo.generation}`; }
 
 loadAll();
-buildJoints(); wire();
+wire();
+$('#ghostOn').checked = App.ghost;
 RAPIER.init().then(() => {
   R = RAPIER;
   $('#loading').remove();
   select({});
+  buildJoints();
   requestAnimationFrame(frame);
   setInterval(saveAll, 4000);
   window.addEventListener('beforeunload', saveAll);
