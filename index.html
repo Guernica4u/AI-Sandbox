@@ -1,244 +1,344 @@
 <!DOCTYPE html>
 <!--
 ================================================================================
- AI SANDBOX HUB  -  single file, no dependencies, works from file://
+ AI SANDBOX HUB  -  works from file:// (fonts fall back to system fonts offline)
 ================================================================================
- Landing page: pick a simulation and it opens on its own.
+ Landing page: pick an environment and it opens on its own.
 
- Adding a simulation: add one entry to SIMS below.
-   href   path to the simulation page (relative to this file)
-   tags   used by the filter chips
-   status "ready" | "soon"   ("soon" shows the card but you can't open it)
-
- Themes: every theme is a block of CSS variables under [data-theme="..."].
- To add one, copy a block, rename it, and add it to THEMES.
+ Adding an environment: add one entry to ENVS below.
+   href     path to the simulation page (relative to this file)
+   preview  looping clip in assets/previews/ (record one with a screen
+            recorder, or leave it out and set canvas: 'walker' etc.)
+   hue      the environment's own colour, used for its button and outline
+   status   "ready" | "dev"   ("dev" shows the card but you can't open it)
 ================================================================================
 -->
-<html lang="en" data-theme="glass">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Sandbox</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-/* ---------- themes ---------- */
-[data-theme="glass"] {          /* matches Glass Box */
-  --bg: #0d1117; --bg2: #11161f; --panel: #161b22; --border: #2b3340;
-  --text: #e6edf3; --muted: #8b95a3; --accent: #58a6ff; --accent-text: #0d1117;
-  --glow: rgba(88,166,255,.18); --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --title-font: var(--font); --radius: 12px; --title-spacing: .5px;
+:root {
+  --bg: #0a0b0d; --surface: #111317; --surface2: #16191e; --line: #23272e; --line2: #2f343c;
+  --text: #e8e6e1; --muted: #8a8f98; --faint: #5a5f68;
+  --signal: #ff6a3d;            /* positive weights / activations */
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
-[data-theme="terminal"] {       /* green-screen CRT */
-  --bg: #050a05; --bg2: #081208; --panel: #0a140a; --border: #1d3b1d;
-  --text: #b6ffb0; --muted: #5f9a5a; --accent: #39ff14; --accent-text: #021002;
-  --glow: rgba(57,255,20,.16); --font: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  --title-font: var(--font); --radius: 2px; --title-spacing: 3px;
-}
-[data-theme="parchment"] {      /* old map / civilization */
-  --bg: #efe4cc; --bg2: #e6d7b8; --panel: #f7efdc; --border: #c9b48a;
-  --text: #3b2d1c; --muted: #7a6547; --accent: #8a3b12; --accent-text: #fff6e6;
-  --glow: rgba(138,59,18,.14); --font: Georgia, "Palatino Linotype", "Book Antiqua", serif;
-  --title-font: var(--font); --radius: 6px; --title-spacing: 1px;
-}
-[data-theme="neon"] {           /* synthwave */
-  --bg: #0b0418; --bg2: #160a2e; --panel: #170c30; --border: #3a1f6b;
-  --text: #f4e9ff; --muted: #a58fc9; --accent: #ff3df2; --accent-text: #12031f;
-  --glow: rgba(255,61,242,.22); --font: "Trebuchet MS", system-ui, sans-serif;
-  --title-font: var(--font); --radius: 14px; --title-spacing: 4px;
-}
-[data-theme="daylight"] {       /* clean and light */
-  --bg: #f6f7f9; --bg2: #eceff3; --panel: #ffffff; --border: #d9dee5;
-  --text: #1b2330; --muted: #637083; --accent: #2563eb; --accent-text: #ffffff;
-  --glow: rgba(37,99,235,.12); --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --title-font: var(--font); --radius: 16px; --title-spacing: 0;
-}
-
-/* ---------- layout ---------- */
 * { box-sizing: border-box; }
-html, body { margin: 0; min-height: 100%; }
+html, body { margin: 0; }
 body {
-  background: radial-gradient(1200px 600px at 50% -10%, var(--glow), transparent 70%), var(--bg);
-  color: var(--text); font: 15px/1.5 var(--font);
-  transition: background-color .3s, color .3s;
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: 24px 24px;
+  color: var(--text); font: 15px/1.55 var(--sans);
 }
-[data-theme="terminal"] body::after {   /* scanlines */
-  content: ""; position: fixed; inset: 0; pointer-events: none;
-  background: repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px);
-}
-[data-theme="neon"] body {
-  background:
-    linear-gradient(transparent 60%, rgba(255,61,242,.08)),
-    radial-gradient(900px 500px at 50% -10%, rgba(0,229,255,.18), transparent 70%), var(--bg);
-}
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px 64px; }
+.wrap { max-width: 1160px; margin: 0 auto; padding: 0 16px 72px; }
+.mono { font-family: var(--mono); }
+.label { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 
-header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 16px 0; }
-.logo { font-weight: 700; letter-spacing: var(--title-spacing); display: flex; align-items: center; gap: 8px; }
-.logo svg { width: 22px; height: 22px; color: var(--accent); }
+/* ---------- top bar ---------- */
+.bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.mark { display: flex; align-items: center; gap: 10px; font: 600 14px var(--mono); letter-spacing: .04em; }
+.mark svg { width: 20px; height: 20px; }
+.bar .status { margin-left: auto; display: flex; gap: 18px; flex-wrap: wrap; }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #3fd17a; margin-right: 6px; vertical-align: 1px; }
 
-.themes { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.themes span { color: var(--muted); font-size: 13px; margin-right: 2px; }
-.swatch {
-  display: flex; align-items: center; gap: 6px; cursor: pointer; font: 13px var(--font);
-  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px 4px 5px;
-}
-.swatch i { width: 16px; height: 16px; border-radius: 50%; display: block; border: 1px solid rgba(128,128,128,.4); }
-.swatch[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow); }
+/* ---------- hero ---------- */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 32px; align-items: center; padding: 56px 0 40px; }
+.hero h1 { font: 600 clamp(40px, 6.4vw, 76px)/1 var(--sans); letter-spacing: -.035em; margin: 14px 0 18px; }
+.hero h1 em { font-style: normal; color: var(--signal); }
+.hero p { color: var(--muted); font-size: 17px; max-width: 30em; margin: 0; }
+.net { position: relative; aspect-ratio: 16 / 10; border: 1px solid var(--line); background: rgba(17,19,23,.7); }
+.net canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.net .label { position: absolute; left: 12px; top: 12px; }
+.net .readout { position: absolute; right: 12px; bottom: 10px; font: 11px var(--mono); color: var(--faint); text-align: right; }
+@media (max-width: 820px) { .hero { grid-template-columns: 1fr; padding-top: 32px; } }
 
-.hero { text-align: center; padding: 48px 0 32px; }
-.hero h1 {
-  font: 700 clamp(34px, 7vw, 64px)/1.05 var(--title-font); letter-spacing: var(--title-spacing); margin: 0 0 12px;
+/* ---------- filter ---------- */
+.toolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+.toolbar h2 { font: 600 13px var(--mono); letter-spacing: .12em; text-transform: uppercase; margin: 0 0 12px; }
+.tabs { display: flex; flex-wrap: wrap; }
+.tab {
+  font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 12px; cursor: pointer; margin-bottom: -1px;
 }
-[data-theme="neon"] .hero h1 { color: #fff; text-shadow: 0 0 12px #ff3df2, 0 0 32px #ff3df2, 0 0 60px #00e5ff; }
-[data-theme="terminal"] .hero h1 { color: var(--accent); text-shadow: 0 0 10px rgba(57,255,20,.6); }
-[data-theme="terminal"] .hero h1::after { content: "_"; animation: blink 1s steps(1) infinite; }
-@keyframes blink { 50% { opacity: 0; } }
-.hero p { color: var(--muted); max-width: 560px; margin: 0 auto; font-size: 17px; }
+.tab:hover { color: var(--text); }
+.tab[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--signal); }
 
-.filters { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 8px 0 24px; }
-.chip {
-  cursor: pointer; font: 14px var(--font); color: var(--muted); background: transparent;
-  border: 1px solid var(--border); border-radius: 999px; padding: 5px 14px;
+/* ---------- environment cards ---------- */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 20px; }
+.env {
+  --hue: #888; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line);
+  transition: border-color .2s;
 }
-.chip:hover { color: var(--text); }
-.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.env:hover { border-color: color-mix(in srgb, var(--hue) 55%, var(--line)); }
+.view { position: relative; aspect-ratio: 16 / 10; overflow: hidden; background: #000; border-bottom: 1px solid var(--line); }
+.view img, .view canvas { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .5s ease; }
+.env:hover .view img { transform: scale(1.04); }
+.view::before, .view::after {      /* viewfinder corners */
+  content: ""; position: absolute; width: 14px; height: 14px; border: 1px solid rgba(255,255,255,.7); pointer-events: none; z-index: 2;
+}
+.view::before { left: 10px; top: 10px; border-right: 0; border-bottom: 0; }
+.view::after { right: 10px; bottom: 10px; border-left: 0; border-top: 0; }
+.view .tag {
+  position: absolute; z-index: 2; left: 10px; bottom: 10px; font: 500 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: #fff; background: rgba(0,0,0,.65); padding: 5px 7px;
+}
+.view .tag i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--hue); margin-right: 6px; vertical-align: 0; }
+.view .id { position: absolute; z-index: 2; right: 10px; top: 10px; font: 500 10px/1 var(--mono); letter-spacing: .1em; color: rgba(255,255,255,.75); background: rgba(0,0,0,.55); padding: 5px 7px; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; }
-.card {
-  position: relative; display: flex; flex-direction: column; gap: 10px; text-decoration: none; color: inherit;
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px;
-  transition: transform .15s, border-color .15s, box-shadow .15s;
+.body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.body h3 { font: 600 19px/1.2 var(--sans); letter-spacing: -.01em; margin: 0; }
+.body p { margin: 0; color: var(--muted); font-size: 14px; }
+.spec { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 2px 0 0; padding: 12px 0 0; border-top: 1px dashed var(--line2); font: 12px/1.35 var(--mono); }
+.spec dt { color: var(--faint); text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px; padding-top: 1px; }
+.spec dd { margin: 0; color: var(--text); }
+.spacer { flex: 1; }
+
+.enter {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; text-decoration: none;
+  font: 600 13px var(--mono); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--hue); border: 1px solid color-mix(in srgb, var(--hue) 60%, transparent);
+  background: color-mix(in srgb, var(--hue) 9%, transparent); padding: 12px 14px; transition: background .15s, color .15s;
 }
-a.card:hover, a.card:focus-visible { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 10px 30px var(--glow); outline: none; }
-.card.soon { opacity: .6; cursor: default; }
-.card .icon {
-  width: 44px; height: 44px; border-radius: calc(var(--radius) * .7); display: grid; place-items: center;
-  background: var(--bg2); color: var(--accent); border: 1px solid var(--border);
-}
-.card .icon svg { width: 24px; height: 24px; }
-.card h2 { font: 600 18px/1.25 var(--title-font); margin: 0; }
-.card p { margin: 0; color: var(--muted); font-size: 14px; flex: 1; }
-.card .meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.card .tags { display: flex; gap: 4px; flex-wrap: wrap; }
-.card .tags b { font-weight: 500; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
-.card .go { color: var(--accent); font-weight: 600; font-size: 14px; white-space: nowrap; }
-.badge {
-  position: absolute; top: 14px; right: 14px; font-size: 11px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase;
-  background: var(--bg2); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
-}
-.empty { text-align: center; color: var(--muted); grid-column: 1 / -1; padding: 32px 0; }
-footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 48px; }
+.enter svg { width: 18px; height: 18px; flex: none; transition: transform .15s; }
+a.enter:hover, a.enter:focus-visible { background: var(--hue); color: #0a0b0d; outline: none; }
+a.enter:hover svg { transform: translateX(3px); }
+.enter.off { color: var(--faint); border-color: var(--line2); background: transparent; cursor: not-allowed; }
+
+footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) { .view img, .enter svg { transition: none; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header class="top">
-    <div class="logo">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 21 7v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/></svg>
-      AI Sandbox
+  <header class="bar">
+    <div class="mark">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="5" r="2"/><circle cx="4" cy="15" r="2"/><circle cx="16" cy="10" r="2.4" fill="#ff6a3d" stroke="#ff6a3d"/><path d="M6 5.6 13.7 9.3M6 14.4l7.7-3.7"/></svg>
+      AI&nbsp;SANDBOX
     </div>
-    <div class="themes" id="themes"><span>Theme</span></div>
+    <div class="status label">
+      <span><span class="dot"></span><span id="countReady"></span> environments online</span>
+      <span id="countAgents"></span>
+    </div>
   </header>
 
   <section class="hero">
-    <h1>AI Sandbox</h1>
-    <p>Worlds where learning agents figure things out for themselves. Pick a simulation to open it.</p>
+    <div>
+      <span class="label">Learning agents · open environments</span>
+      <h1>Nobody tells them <em>how.</em></h1>
+      <p>Every agent here starts out knowing nothing. They work out games, tools, houses and each other by trying things and remembering what worked. Pick an environment and watch them learn.</p>
+    </div>
+    <div class="net" aria-hidden="true">
+      <canvas id="net"></canvas>
+      <span class="label">Policy network · forward pass</span>
+      <div class="readout" id="netReadout"></div>
+    </div>
   </section>
 
-  <nav class="filters" id="filters" aria-label="Filter simulations"></nav>
+  <div class="toolbar">
+    <h2>Environments</h2>
+    <nav class="tabs" id="tabs" aria-label="Filter environments"></nav>
+  </div>
   <main class="grid" id="grid"></main>
 
-  <footer>Your progress is saved in each simulation in this browser.</footer>
+  <footer class="label">
+    <span>Agents and what they've learned are saved in this browser</span>
+    <span>Previews are recorded from the real simulations</span>
+  </footer>
 </div>
 
 <script>
 const GB = 'projects/glass-box/index.html';
-const ICONS = {
-  grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
-  box: '<path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10"/>',
-  house: '<path d="M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6"/>',
-  tree: '<path d="M12 2 5 12h4l-3 5h12l-3-5h4zM12 17v5"/>',
-  fist: '<path d="M7 11V7a2 2 0 0 1 4 0v4M11 10V6a2 2 0 0 1 4 0v5M15 10a2 2 0 0 1 4 0v3a7 7 0 0 1-7 7h-1a6 6 0 0 1-6-6v-2a2 2 0 0 1 2-2h3"/>',
-  spear: '<path d="M4 20 18 6M18 6l2-4-4 2zM8 12l4 4"/>',
-  people: '<circle cx="8" cy="7" r="3"/><circle cx="17" cy="8" r="2.5"/><path d="M2 21v-2a5 5 0 0 1 10 0v2M14 21v-2a4 4 0 0 1 8 0v2"/>',
-};
-
-const SIMS = [
-  { id: 'ttt', name: 'Tic-Tac-Toe', icon: 'grid', tags: ['Games'], from: 'Glass Box',
-    desc: 'Play against agents that learn from every game, or watch them train against each other.',
-    href: GB + '?env=tictactoe', status: 'ready' },
-  { id: 'room', name: 'The Room', icon: 'box', tags: ['Puzzles'], from: 'Glass Box',
-    desc: 'Agents start out wandering at random and have to work out that the box goes on the button.',
-    href: GB + '?env=room', status: 'ready' },
-  { id: 'house', name: 'Forest: Build a House', icon: 'house', tags: ['Building', 'Forest'], from: 'Glass Box',
-    desc: 'A team has 20 days to build a house on the plot, from laying out the logs to finishing the roof.',
-    href: GB + '?env=forest&setting=build', status: 'ready' },
-  { id: 'survive', name: 'Forest: Survive', icon: 'tree', tags: ['Survival', 'Forest'], from: 'Glass Box',
-    desc: 'Stay alive for 30 days. Find water and food, and learn which berries make you sick.',
-    href: GB + '?env=forest&setting=survive', status: 'ready' },
-  { id: 'fist', name: 'Fist Fight', icon: 'fist', tags: ['Combat', 'Forest'], from: 'Glass Box',
-    desc: 'A sparring ring, fists only: strike, block, shove, pin, or give up.',
-    href: GB + '?env=forest&setting=fist', status: 'ready' },
-  { id: 'wild', name: 'Fight in the Forest', icon: 'spear', tags: ['Combat', 'Forest'], from: 'Glass Box',
-    desc: 'An open fight with sticks, stones and spears lying around.',
-    href: GB + '?env=forest&setting=wild', status: 'ready' },
-  { id: 'civ', name: 'Embodied Civilization', icon: 'people', tags: ['Civilization', 'Survival', 'Building'], from: 'New',
-    desc: 'Agents with physical bodies who learn to walk and grab on their own, then run a civilization together.',
-    href: 'projects/embodied-civ/index.html', status: 'soon' },
+const ENVS = [
+  { id: 'ttt', name: 'Tic-Tac-Toe', hue: '#58a6ff', tags: ['Games'], preview: 'assets/previews/ttt.webp',
+    desc: 'Play against agents that learn from every game, or watch two of them play and see what each one is thinking.',
+    agents: 'Alpha · Beta · Menace', learns: 'Q-learning, MENACE', goal: 'Win, or at least draw',
+    href: GB + '?env=tictactoe', cta: 'Play a game' },
+  { id: 'room', name: 'The Room', hue: '#e0a458', tags: ['Puzzles'], preview: 'assets/previews/room.webp',
+    desc: 'Nobody tells them what the button is for. They wander, push things, break things, and slowly work it out.',
+    agents: 'Ada · Bo · Cy', learns: 'Q-learning', goal: 'Put the box on the button',
+    href: GB + '?env=room', cta: 'Enter the room' },
+  { id: 'build', name: 'Forest: Build a House', hue: '#7bc96f', tags: ['Building', 'Forest'], preview: 'assets/previews/build.webp',
+    desc: 'A crew of three has 20 days to build a house on the plot: gather logs, make tools, lay the floor plan, raise the roof.',
+    agents: 'Ash · Fern · Rowan', learns: 'Q-learning, skills, beliefs', goal: 'A finished house by day 20',
+    href: GB + '?env=forest&setting=build', cta: 'Start building' },
+  { id: 'survive', name: 'Forest: Survive', hue: '#d9c25b', tags: ['Survival', 'Forest'], preview: 'assets/previews/survive.webp',
+    desc: 'Food, water and energy run down. Find the stream, and learn which berries make you sick.',
+    agents: 'Ash · Fern · Rowan', learns: 'Q-learning, skills, beliefs', goal: 'Stay alive for 30 days',
+    href: GB + '?env=forest&setting=survive', cta: 'Start surviving' },
+  { id: 'fist', name: 'Fist Fight', hue: '#ef6a5b', tags: ['Combat', 'Forest'], preview: 'assets/previews/fist.webp',
+    desc: 'A sparring ring, fists only. Strike, block, shove, pin someone who is down, or give up.',
+    agents: 'Ash · Fern · Rowan', learns: 'Q-learning', goal: 'Last one standing',
+    href: GB + '?env=forest&setting=fist', cta: 'Enter the ring' },
+  { id: 'wild', name: 'Fight in the Forest', hue: '#c65bd9', tags: ['Combat', 'Forest'], preview: 'assets/previews/wild.webp',
+    desc: 'An open fight among the trees, with sticks, stones and spears lying around for anyone who thinks to pick them up.',
+    agents: 'Ash · Fern · Rowan', learns: 'Q-learning', goal: 'Last one standing',
+    href: GB + '?env=forest&setting=wild', cta: 'Enter the forest' },
+  { id: 'civ', name: 'Embodied Civilization', hue: '#ff6a3d', tags: ['Civilization', 'Survival', 'Building'], canvas: 'walker',
+    desc: 'Agents with physical bodies who control every joint, learn to walk and grab by themselves, then run a civilization.',
+    agents: 'TBD', learns: 'Neuroevolution (motor control)', goal: 'Build a civilization',
+    href: 'projects/embodied-civ/index.html', cta: 'In development', status: 'dev' },
 ];
 
-const THEMES = [
-  { id: 'glass', name: 'Glass', dot: 'linear-gradient(135deg,#0d1117 50%,#58a6ff 50%)' },
-  { id: 'terminal', name: 'Terminal', dot: 'linear-gradient(135deg,#050a05 50%,#39ff14 50%)' },
-  { id: 'parchment', name: 'Parchment', dot: 'linear-gradient(135deg,#efe4cc 50%,#8a3b12 50%)' },
-  { id: 'neon', name: 'Neon', dot: 'linear-gradient(135deg,#0b0418 50%,#ff3df2 50%)' },
-  { id: 'daylight', name: 'Daylight', dot: 'linear-gradient(135deg,#ffffff 50%,#2563eb 50%)' },
-];
-
-const store = {   // localStorage can be blocked (private windows, file:// in some setups)
-  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } },
-};
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const ARROW = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 10h13M11 5l5 5-5 5"/></svg>';
+const LOCK = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="9" width="12" height="8"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/></svg>';
 
-function setTheme(id) {
-  if (!THEMES.some(t => t.id === id)) id = 'glass';
-  document.documentElement.dataset.theme = id;
-  document.querySelectorAll('.swatch').forEach(b => b.setAttribute('aria-pressed', b.dataset.theme === id));
-  store.set('ai-sandbox/theme', id);
-}
-
+/* ---------- cards ---------- */
 let filter = 'All';
 function render() {
-  const tags = ['All', ...new Set(SIMS.flatMap(s => s.tags))];
-  document.getElementById('filters').innerHTML = tags.map(t =>
-    `<button class="chip" aria-pressed="${t === filter}" data-tag="${esc(t)}">${esc(t)}</button>`).join('');
-  const shown = SIMS.filter(s => filter === 'All' || s.tags.includes(filter));
-  document.getElementById('grid').innerHTML = shown.map(s => {
-    const ready = s.status === 'ready';
-    const inner = `
-      ${ready ? '' : '<span class="badge">Coming soon</span>'}
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[s.icon] || ICONS.box}</svg></div>
-      <h2>${esc(s.name)}</h2>
-      <p>${esc(s.desc)}</p>
-      <div class="meta">
-        <div class="tags">${s.tags.map(t => `<b>${esc(t)}</b>`).join('')}</div>
-        ${ready ? '<span class="go">Enter →</span>' : `<span>${esc(s.from)}</span>`}
-      </div>`;
-    return ready
-      ? `<a class="card" href="${esc(s.href)}" title="${esc(s.from)}">${inner}</a>`
-      : `<div class="card soon" aria-disabled="true">${inner}</div>`;
-  }).join('') || '<div class="empty">Nothing here yet.</div>';
+  const tags = ['All', ...new Set(ENVS.flatMap(e => e.tags))];
+  document.getElementById('tabs').innerHTML = tags.map(t =>
+    `<button class="tab" aria-pressed="${t === filter}" data-tag="${esc(t)}">${esc(t)}</button>`).join('');
+  document.getElementById('grid').innerHTML = ENVS.map((e, i) => {
+    if (filter !== 'All' && !e.tags.includes(filter)) return '';
+    const ready = e.status !== 'dev';
+    const view = e.preview
+      ? `<img src="${esc(e.preview)}" alt="Recorded preview of ${esc(e.name)}" loading="lazy">`
+      : `<canvas data-draw="${esc(e.canvas)}"></canvas>`;
+    return `<article class="env" style="--hue:${e.hue}">
+      <div class="view">${view}
+        <span class="id">ENV.${String(i + 1).padStart(2, '0')}</span>
+        <span class="tag"><i></i>${ready ? 'Preview' : 'Concept sketch · torque in orange'}</span>
+      </div>
+      <div class="body">
+        <h3>${esc(e.name)}</h3>
+        <p>${esc(e.desc)}</p>
+        <div class="spacer"></div>
+        <dl class="spec">
+          <dt>Agents</dt><dd>${esc(e.agents)}</dd>
+          <dt>Learns by</dt><dd>${esc(e.learns)}</dd>
+          <dt>Goal</dt><dd>${esc(e.goal)}</dd>
+        </dl>
+        ${ready
+          ? `<a class="enter" href="${esc(e.href)}">${esc(e.cta)}${ARROW}</a>`
+          : `<span class="enter off" aria-disabled="true">${esc(e.cta)}${LOCK}</span>`}
+      </div>
+    </article>`;
+  }).join('');
+  document.querySelectorAll('canvas[data-draw="walker"]').forEach(startWalker);
+}
+document.getElementById('tabs').addEventListener('click', ev => {
+  const b = ev.target.closest('.tab'); if (b) { filter = b.dataset.tag; render(); }
+});
+const ready = ENVS.filter(e => e.status !== 'dev');
+document.getElementById('countReady').textContent = ready.length;
+document.getElementById('countAgents').textContent = new Set(ready.flatMap(e => e.agents.split(' · '))).size + ' agents';
+
+/* ---------- canvas helpers ---------- */
+function fitCanvas(c) {
+  const r = c.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(r.width * d)), h = Math.max(1, Math.round(r.height * d));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return { ctx: c.getContext('2d'), w, h, d };
+}
+function loop(fn) {   // runs fn(t) every frame (once if reduced motion), skips frames while off-screen
+  let on = true;
+  const io = new IntersectionObserver(es => { on = es[0].isIntersecting; });
+  return el => {
+    io.observe(el);
+    const tick = t => { if (!el.isConnected) return io.disconnect(); if (on) fn(t / 1000); if (!reduced) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  };
 }
 
-document.getElementById('themes').insertAdjacentHTML('beforeend', THEMES.map(t =>
-  `<button class="swatch" data-theme="${t.id}" aria-pressed="false"><i style="background:${t.dot}"></i>${esc(t.name)}</button>`).join(''));
-document.getElementById('themes').addEventListener('click', e => {
-  const b = e.target.closest('.swatch'); if (b) setTheme(b.dataset.theme);
-});
-document.getElementById('filters').addEventListener('click', e => {
-  const b = e.target.closest('.chip'); if (b) { filter = b.dataset.tag; render(); }
-});
-setTheme(store.get('ai-sandbox/theme'));
+/* ---------- hero: a small MLP doing real forward passes on moving inputs ---------- */
+(() => {
+  const c = document.getElementById('net'), out = document.getElementById('netReadout');
+  const L = [5, 8, 8, 6, 3];
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const W = L.slice(1).map((n, k) => Array.from({ length: n }, () => Array.from({ length: L[k] }, () => (rnd() * 2 - 1) * 1.6)));
+  const B = L.slice(1).map(n => Array.from({ length: n }, () => (rnd() * 2 - 1) * .3));
+  const names = ['walk', 'grab', 'rest'];
+  loop(t => {
+    const { ctx, w, h, d } = fitCanvas(c);
+    const a = [Array.from({ length: L[0] }, (_, i) => Math.sin(t * (.6 + i * .23) + i * 1.7))];
+    for (let k = 0; k < W.length; k++) {
+      const z = W[k].map((row, j) => row.reduce((s, wt, i) => s + wt * a[k][i], B[k][j]));
+      a.push(k === W.length - 1 ? softmax(z) : z.map(Math.tanh));
+    }
+    const padX = w * .08, padR = w * .2, padY = h * .16, gx = (w - padX - padR) / (L.length - 1);
+    const pos = L.map((n, k) => Array.from({ length: n }, (_, i) => [padX + k * gx, padY + (n === 1 ? .5 : i / (n - 1)) * (h - padY * 2)]));
+    ctx.clearRect(0, 0, w, h);
+    for (let k = 0; k < W.length; k++) for (let j = 0; j < L[k + 1]; j++) for (let i = 0; i < L[k]; i++) {
+      const sig = W[k][j][i] * a[k][i];                       // signal actually flowing along this edge
+      const s = Math.min(1, Math.abs(sig) / 1.6);
+      ctx.strokeStyle = sig > 0 ? `rgba(255,106,61,${.08 + s * .75})` : `rgba(160,170,185,${.05 + s * .35})`;
+      ctx.lineWidth = (.5 + s * 1.6) * d;
+      ctx.beginPath(); ctx.moveTo(...pos[k][i]); ctx.lineTo(...pos[k + 1][j]); ctx.stroke();
+    }
+    a.forEach((layer, k) => layer.forEach((v, i) => {
+      const [x, y] = pos[k][i], last = k === L.length - 1, m = last ? v : (v + 1) / 2;
+      ctx.beginPath(); ctx.arc(x, y, (last ? 6 : 4.5) * d, 0, 7);
+      ctx.fillStyle = '#0a0b0d'; ctx.fill();
+      ctx.lineWidth = 1.2 * d; ctx.strokeStyle = '#5a5f68'; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, (last ? 6 : 4.5) * d * m, 0, 7); ctx.fillStyle = last ? '#ff6a3d' : '#e8e6e1'; ctx.fill();
+      if (last) { ctx.fillStyle = '#8a8f98'; ctx.font = `${11 * d}px ${getComputedStyle(document.body).getPropertyValue('--mono')}`; ctx.fillText(`${names[i]} ${(v * 100).toFixed(0)}%`, x + 12 * d, y + 4 * d); }
+    }));
+    const best = a[a.length - 1].indexOf(Math.max(...a[a.length - 1]));
+    out.textContent = `layers ${L.join('-')} · action → ${names[best]}`;
+  })(c);
+  function softmax(z) { const m = Math.max(...z), e = z.map(v => Math.exp((v - m) * 1.4)), s = e.reduce((p, q) => p + q, 0); return e.map(v => v / s); }
+})();
+
+/* ---------- embodied civ preview: a schematic jointed walker (2-link IK legs) ---------- */
+function startWalker(c) {
+  const mono = getComputedStyle(document.body).getPropertyValue('--mono');
+  const knee = (hip, foot, l1, l2) => {          // 2-link inverse kinematics, knee bends forward
+    const dx = foot[0] - hip[0], dy = foot[1] - hip[1], dd = Math.min(Math.hypot(dx, dy), l1 + l2 - .01);
+    const off = Math.acos(Math.max(-1, Math.min(1, (l1 * l1 + dd * dd - l2 * l2) / (2 * l1 * dd))));
+    const a = Math.atan2(dy, dx) - off;
+    return [hip[0] + Math.cos(a) * l1, hip[1] + Math.sin(a) * l1];
+  };
+  const ang = (a, b) => Math.atan2(b[1] - a[1], b[0] - a[0]);
+  loop(t => {
+    const { ctx, w, h, d } = fitCanvas(c);
+    const s = h / 250, ground = h * .8, speed = 46 * s, stride = 26 * s, ph = t * 2.2;
+    ctx.fillStyle = '#0d0f12'; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#1f242b'; ctx.lineWidth = d;              // ground ticks scroll past
+    for (let x = -((t * speed * 2.2 / Math.PI) % (24 * s)); x < w; x += 24 * s) { ctx.beginPath(); ctx.moveTo(x, ground); ctx.lineTo(x - 9 * s, ground + 9 * s); ctx.stroke(); }
+    ctx.strokeStyle = '#3a3f47'; ctx.beginPath(); ctx.moveTo(0, ground); ctx.lineTo(w, ground); ctx.stroke();
+
+    const thigh = 44 * s, shin = 42 * s, torso = 52 * s, upper = 28 * s, fore = 26 * s;
+    const footAt = p => {                                       // stance: slide back on the ground, swing: lift and move forward
+      const u = ((ph + p) / (2 * Math.PI)) % 1;
+      return u < .5 ? [stride - u * 4 * stride, 0] : [-stride + (u - .5) * 4 * stride, -Math.sin((u - .5) * 2 * Math.PI) * 14 * s];
+    };
+    const bob = Math.cos(ph * 2) * 2.5 * s;
+    const hip = [w * .5, ground - (thigh + shin) * .93 + bob];
+    const legs = [Math.PI, 0].map(p => { const f = footAt(p), foot = [hip[0] + f[0], ground + f[1]]; return [knee(hip, foot, thigh, shin), foot]; });
+    const neck = [hip[0] + 5 * s, hip[1] - torso];
+    const arms = [0, Math.PI].map(p => {
+      const sw = Math.sin(ph + p) * .45, el = [neck[0] + Math.sin(sw) * upper, neck[1] + 4 * s + Math.cos(sw) * upper];
+      return [el, [el[0] + Math.sin(sw + .5) * fore, el[1] + Math.cos(sw + .5) * fore]];
+    });
+    const bone = (pts, col) => { ctx.strokeStyle = col; ctx.lineWidth = 3 * d; ctx.lineCap = ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(...pts[0]); pts.slice(1).forEach(q => ctx.lineTo(...q)); ctx.stroke(); };
+    const joint = (p, torque) => {
+      ctx.beginPath(); ctx.arc(p[0], p[1], 11 * d, -Math.PI / 2, -Math.PI / 2 + torque * 2.6, torque < 0); ctx.strokeStyle = 'rgba(255,106,61,.9)'; ctx.lineWidth = 1.6 * d; ctx.stroke();
+      ctx.beginPath(); ctx.arc(p[0], p[1], 4 * d, 0, 7); ctx.fillStyle = '#0d0f12'; ctx.fill(); ctx.lineWidth = 1.5 * d; ctx.strokeStyle = '#e8e6e1'; ctx.stroke();
+    };
+    const far = '#4a4f58', near = '#e8e6e1';
+    bone([neck, ...arms[0]], far); bone([hip, ...legs[0]], far);
+    bone([hip, neck], near); bone([hip, ...legs[1]], near); bone([neck, ...arms[1]], near);
+    ctx.beginPath(); ctx.arc(neck[0] + 2 * s, neck[1] - 13 * s, 10 * s, 0, 7); ctx.strokeStyle = near; ctx.lineWidth = 2 * d; ctx.stroke();
+    joint(hip, Math.cos(ph) * .8); joint(legs[0][0], Math.sin(ph + Math.PI) * .6); joint(legs[1][0], Math.sin(ph) * .6);
+
+    ctx.font = `${10.5 * d}px ${mono}`; ctx.fillStyle = '#8a8f98';
+    legs.forEach(([k, f], i) => {
+      const hA = (ang(hip, k) - Math.PI / 2) * -57.3, kA = (ang(k, f) - ang(hip, k)) * 57.3;
+      ctx.fillText(`${'LR'[i]}.hip ${String(Math.round(hA) || 0).padStart(4)}°  ${'LR'[i]}.knee ${Math.abs(kA).toFixed(0).padStart(3)}°`, 32 * d, 22 * d + i * 15 * d);
+    });
+  })(c);
+}
+
 render();
 </script>
 </body>
