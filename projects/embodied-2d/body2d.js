@@ -542,7 +542,7 @@ class Trial {
     this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.4 * (opts.push === undefined ? 1 : opts.push);
     this.terrainLevel = opts.terrainLevel === undefined ? this.hard : opts.terrainLevel;
-    this.roughness = opts.roughness === undefined ? this.hard : opts.roughness;
+    this.roughness = opts.roughness === undefined ? this.terrainLevel : opts.roughness;   // stones arrive with the sticks and logs
     this.terrain = opts.terrain || (this.task.terrain ? makeTerrain(this.rng, this.terrainLevel, this.roughness) : []);
     this.foodX = opts.foodX || 6 + 3.5 * this.hard + this.rng() * this.hard;   // walk: food gets farther with the curriculum (6 → 9.5-10.5 m)
     // energy gets scarce with the curriculum: 5x the store at first (learn to balance stiffly, like a toddler),
