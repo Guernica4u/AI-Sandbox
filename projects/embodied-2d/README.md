@@ -2,10 +2,11 @@
 
 Agents with physical bodies learn motor skills by themselves. Each body is a
 1.7 m, ~64 kg humanoid seen from the side, with 10 motorised joints (hips,
-knees, ankles, shoulders, elbows; left and right are separate) and a right
-hand that can close. A small neural network (44 senses → 32 hidden → 11
-motors) runs 60 times a second and sets every motor's target angle. Nothing
-about walking or grabbing is scripted.
+knees, ankles, shoulders, elbows; left and right are separate), human-shaped
+feet (heel behind the ankle) and a right hand that can close. A small neural
+network (49 senses → 32 hidden → 11 motors) runs 60 times a second and sets
+every motor's target angle. Nothing about walking or grabbing is scripted, and
+nothing copies a human.
 
 Open `index.html` directly (works from `file://`) or through GitHub Pages.
 The page opens on **Nova**, an untrained agent; **Kit, Juno and Pax** are
@@ -15,56 +16,71 @@ trained examples.
 
 | Mode | What it does |
 |---|---|
-| **Watch** | The agent tries its skill. *Show ideal* draws the reference movement as a ghost on top. *Test 10 runs* gives a success rate. Click near the body to shove it. |
-| **Train** | 48 variations per generation, in the background (you can keep watching or teaching). *Learn from* adds a reward for moving like the reference or your demonstration; off by default. |
-| **Teach** | Move the limbs yourself: drag any part, or set joints with sliders. The brain keeps running and fights you, but nothing here changes any brain or training run. Harness holds the hips up; *Hold pose* freezes joints where they are; the hand can be forced open/closed. Record keyframes and save them as a demonstration. |
+| **Watch** | The agent tries its skill. *Show ideal* draws a reference human movement as a ghost, for comparison only (it is never trained on). *Success check* runs 10 attempts. Click near the body to shove it. |
+| **Train** | 48 variations per generation, in the background (you can keep watching or testing). |
+| **Test** | Move the limbs yourself (drag any part, or hold a slider; let go and the brain takes over) and see how the agent reacts. *Brain off* makes the body go limp; *Freeze time* pauses physics (sliders still pose it). Nothing here changes any brain or training run. |
+
+## Realism: why they walk the way they do
+
+Instead of rewarding a human-looking walk, the agents get the problems that
+shaped human walking, and adapt to them:
+
+- **Muscles cost energy even when holding still.** Every motor burns energy in
+  proportion to how hard it pushes, plus the work it does, plus a resting cost.
+  Tiptoeing (calf always working) costs about 4× standing flat-footed; holding a
+  leg up behind you costs more than putting it down.
+- **Muscles get tired.** Sustained effort fatigues a joint and makes it weaker;
+  rest recovers it. A tiptoe calf wears out within seconds.
+- **Energy is limited.** Every attempt starts with an energy store. Running out
+  is crippling (10% strength). Energy left at the end adds to the score.
+- **Food is far away.** Walk is *Walk to food*: the food is 6–10 m away, and a
+  wasteful gait runs out before it gets there.
+- **Feeling the feet.** Separate pressure senses under each heel and toe, and a
+  human ankle range (toes down 43°, up 20°).
+
+Energy is in game joules (a fully tensed body burns ~10 kW, a relaxed one a few
+hundred watts); what matters is the *relative* cost of different movements.
 
 ## Skills
 
-| Skill | Goal | Success test |
+| Skill | Goal | Success check |
 |---|---|---|
 | Stand | Stay upright and in place while being shoved every 2 s | stayed standing |
-| Walk | Get as far right as possible in 10 s; sticks and logs appear as training goes on | walked 5 m without falling |
-| Pick up the glass | A glass on a small wall shelf: reach, touch, close the hand, lift, keep it upright | lifted 10 cm without spilling |
+| Walk to food | Reach food 6–10 m away before the energy runs out; sticks and logs appear as training goes on | reached the food |
+| Pick up the glass | The glass stands on a free-standing table (~8 kg: it slides if you lean on it and tips if you bump it). Reach, touch, close the hand, lift, keep it upright | lifted 10 cm without spilling or knocking the table over |
 
 Walk and Pick up the glass start from the agent's Stand brain.
 
-**Curriculum** (gets harder as the agent improves): shoves and sensor noise
-reach full strength at generation 150; obstacles creep in from generation 60
-to 400 (sticks up to 3.5 cm you trip over if you drag your feet, logs up to
-9 cm you have to step over); the grip assist (the hand closes on touch) fades
-from 100% to 0% by generation 200.
+**Curriculum** (gets harder as the agent improves): shoves, sensor noise and
+energy scarcity reach full strength at generation 150 (energy starts at 5× the
+store, so agents first learn to balance stiffly, like a toddler, and then to
+relax); the food moves from 6 m to 9.5–10.5 m; obstacles creep in from generation
+60 to 400 (sticks up to 3.5 cm you trip over if you drag your feet, logs up to
+9 cm you step over); the grip assist (the hand closes on touch) fades from
+100% to 0% by generation 200.
 
-**Senses**: torso tilt/spin/velocity/height, every joint's angle and speed,
-feet touching the ground and their height above it, a 1 Hz clock, task inputs
-(where the glass is), and the ground height at 8 points ahead (so they can see
-obstacles coming).
+## Where the example agents stand (body v3)
 
-**Energy** used by the motors is measured and shown, but not scored yet. When
-food arrives (civilization), energy becomes a body stat you refill by eating.
+Success check (10 fixed runs) at each skill's full difficulty:
 
-## Where the example agents stand
-
-Measured over 9–10 fixed test runs each, at each skill's full difficulty:
-
-| Agent | Stand | Walk (full obstacles) | Pick up the glass |
+| Agent | Stand | Walk to food (10 m, obstacles, limited energy) | Pick up the glass (movable table, no reference) |
 |---|---|---|---|
-| Kit | 10/10 | 3/9 | 8/9 |
-| Juno | 10/10 | 5/9 (learned from the reference walk) | 8/9 |
-| Pax | 6/10 | ~5/10 | 2/9 |
+| Kit | 10/10 | 0/10 | 0/10 |
+| Juno | 5/10 | 0/10 (gets ~5 m; 2/9 in training tests) | 0/10 (1/9 in training tests) |
+| Pax | 10/10 | 0/10 | 0/10 |
 
-Grab was trained with *Learn from: Reference movement* (it only guides the
-right arm). All agents now alternate their feet (no foot stays up longer than
-about 1 s), but each still keeps **one foot on its toes** (never flat). Next
-candidates for that: an energy cost (tiptoe is tiring), or rewarding the heel.
+Honest status: with energy, fatigue, a time limit, obstacles and a table that
+moves, walking and grabbing are much harder, and the agents haven't mastered
+them at full difficulty yet. Feet: the gaits alternate and no foot stays up for
+long, but a fully flat heel-to-toe step hasn't emerged yet.
 
 ## Files
 
 | File | What it is | Reused in 3D? |
 |---|---|---|
 | `brain.js` | Networks, evolution, brain file format. No physics, no page code. | **Yes, as-is.** |
-| `body2d.js` | Body plan table, Rapier 2D world, senses/motors, obstacles, tasks and scoring, motion clips (reference + demonstrations), skill transfer | **Mostly.** Rapier 3D has the same API; shapes and joint axes change. Scoring, curriculum, clip format and anti-exploit rules carry over. |
-| `index.html` | Watch / Train / Teach UI, saving | Partly (training loop, panels, teach logic); the renderer becomes three.js. |
+| `body2d.js` | Body plan table, muscles (energy and fatigue), Rapier 2D world, senses/motors, obstacles, tasks and scoring, reference movements, skill transfer | **Mostly.** Rapier 3D has the same API; shapes and joint axes change. Muscles, scoring, curriculum and anti-exploit rules carry over (the energy/fatigue model is also the stamina system for fighting). |
+| `index.html` | Watch / Train / Test UI, saving | Partly; the renderer becomes three.js. |
 | `starters.js` | Pretrained Kit, Juno and Pax (`window.EMBODIED_STARTERS`) | No: brains only fit the body they trained on. |
 | `vendor/rapier2d.js` | Rapier 2D 0.21.0 (Apache-2.0, see `vendor/LICENSE-rapier2d.txt`), bundled as a plain script so it works from `file://` | Swapped for Rapier 3D. |
 
@@ -73,22 +89,19 @@ candidates for that: an energy cost (tiptoe is tiring), or rewarding the heel.
 - **Sitting counts as standing** if "fallen" only checks head height. Then
   **the splits** did too. Fallen now means hips below ~1 m, and Stand charges
   for a stance wider than 45 cm.
+- **Standing on empty.** With energy added, agents burned their whole store in
+  0.2 s and then stood in the weakened state. Running empty is now crippling,
+  and energy scarcity grows with the curriculum.
 - **Swinging past the glass** scored like reaching it when the reward used the
   closest distance ever reached. Reward is now paid every moment.
+- **Furniture gets exploited.** A fixed table was pressed against, braced on,
+  and even gripped *through*. The table is now free-standing (it slides and
+  tips), and touching the glass from under the table doesn't count.
 - **Balance breaks when the arms learn.** Half the mutations only touch one
   limb group's outputs (legs, or arms and hand).
-- **A new sense makes an old brain flail.** A Stand brain fell within 0.4 s
-  the first time it saw the glass, because the connections from that sense
-  were never tested. Starting a new skill now cuts connections from senses the
-  old skill never used (`transferBrain`).
-- **Obstacles too early** taught agents to stop in front of logs. They now
-  learn flat walking first.
-- **The table kept getting in the way.** A solid block tripped forward feet;
-  a tabletop sat in the arm's path, so agents pressed their hand under it and
-  even gripped the glass *through* it; a table far enough away needed an
-  over-the-top reach that evolution never found. The glass now stands on a
-  small wall shelf on the natural path of a forward arm raise. Touching also
-  requires the hand to be at or above the shelf.
+- **A new sense makes an old brain flail.** Starting a new skill cuts
+  connections from senses the old skill never used (`transferBrain`), and
+  loosens the arms before learning to grab.
 - **Lucky runs** looked like skill. Every brain is tested on the same 2–3
   episodes with random shoves, and inconsistent brains score lower.
 

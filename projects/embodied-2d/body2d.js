@@ -10,13 +10,21 @@
  table, the sense/act layout and the task scoring are written so they carry
  over; what changes is the shapes (capsules get a 3D axis) and joint axes.
 
- Units: metres, kilograms, seconds. y is up, the agent faces +x.
+ Realism: muscles cost energy whenever they push (even just holding), they tire
+ with sustained effort and recover with rest, and every attempt starts with a
+ limited energy store. Nothing tells the agents how to move; efficient
+ movement is simply what lasts.
+
+ Units: metres, kilograms, seconds, joules. y is up, the agent faces +x.
 ================================================================================
 */
 (function (root) {
 'use strict';
 
 const DT = 1 / 60;
+// muscles (see Biped.muscles): resting watts, watts per N·m of force held, multiplier on work done,
+// how fast sustained effort tires a joint, how fast rest recovers it
+const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 0.05;
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
 const groups = (member, filter) => (member << 16) | filter;
 const wrap = a => a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));   // to -π..π
@@ -25,15 +33,15 @@ const wrap = a => a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));  
    y values are for standing still with the feet on the ground.
    side: 'L' limbs are drawn behind the torso, 'R' in front.                      */
 const BIPED = {
-  id: 'biped2d-v2',          // v2: 44 senses (ground ahead, foot height)
+  id: 'biped2d-v3',          // v3: human foot, heel/toe senses, energy and fatigue senses
   parts: [
     { id: 'torso', shape: 'box', hx: 0.11, hy: 0.28, x: 0, y: 1.20, density: 200, head: { r: 0.10, y: 0.40 } },
     { id: 'thighL', side: 'L', shape: 'capsule', r: 0.060, hh: 0.150, x: 0, y: 0.71, density: 120 },
     { id: 'shinL', side: 'L', shape: 'capsule', r: 0.045, hh: 0.165, x: 0, y: 0.29, density: 120 },
-    { id: 'footL', side: 'L', shape: 'box', hx: 0.12, hy: 0.03, x: 0.04, y: 0.03, density: 120, foot: true },
+    { id: 'footL', side: 'L', shape: 'box', hx: 0.11, hy: 0.03, x: 0.055, y: 0.03, density: 120, foot: true },   // heel 5.5 cm behind the ankle, toes 16.5 cm ahead
     { id: 'thighR', side: 'R', shape: 'capsule', r: 0.060, hh: 0.150, x: 0, y: 0.71, density: 120 },
     { id: 'shinR', side: 'R', shape: 'capsule', r: 0.045, hh: 0.165, x: 0, y: 0.29, density: 120 },
-    { id: 'footR', side: 'R', shape: 'box', hx: 0.12, hy: 0.03, x: 0.04, y: 0.03, density: 120, foot: true },
+    { id: 'footR', side: 'R', shape: 'box', hx: 0.11, hy: 0.03, x: 0.055, y: 0.03, density: 120, foot: true },
     { id: 'upperL', side: 'L', shape: 'capsule', r: 0.040, hh: 0.110, x: 0, y: 1.27, density: 120 },
     { id: 'foreL', side: 'L', shape: 'capsule', r: 0.035, hh: 0.105, x: 0, y: 0.98, density: 120, hand: { r: 0.045, y: -0.16 } },
     { id: 'upperR', side: 'R', shape: 'capsule', r: 0.040, hh: 0.110, x: 0, y: 1.27, density: 120 },
@@ -44,10 +52,10 @@ const BIPED = {
   joints: [
     { id: 'hipL', a: 'torso', b: 'thighL', x: 0, y: 0.92, lo: -0.6, hi: 1.9, rest: 0.05, k: 3500, d: 90, max: 320 },
     { id: 'kneeL', a: 'thighL', b: 'shinL', x: 0, y: 0.50, lo: -2.3, hi: 0.0, rest: -0.08, k: 3500, d: 90, max: 300 },
-    { id: 'ankleL', a: 'shinL', b: 'footL', x: 0, y: 0.08, lo: -0.6, hi: 0.6, rest: 0.0, k: 4000, d: 90, max: 260 },
+    { id: 'ankleL', a: 'shinL', b: 'footL', x: 0, y: 0.08, lo: -0.75, hi: 0.35, rest: 0.0, k: 4000, d: 90, max: 200 },   // human range: toes down 43°, up 20°
     { id: 'hipR', a: 'torso', b: 'thighR', x: 0, y: 0.92, lo: -0.6, hi: 1.9, rest: 0.05, k: 3500, d: 90, max: 320 },
     { id: 'kneeR', a: 'thighR', b: 'shinR', x: 0, y: 0.50, lo: -2.3, hi: 0.0, rest: -0.08, k: 3500, d: 90, max: 300 },
-    { id: 'ankleR', a: 'shinR', b: 'footR', x: 0, y: 0.08, lo: -0.6, hi: 0.6, rest: 0.0, k: 4000, d: 90, max: 260 },
+    { id: 'ankleR', a: 'shinR', b: 'footR', x: 0, y: 0.08, lo: -0.75, hi: 0.35, rest: 0.0, k: 4000, d: 90, max: 200 },   // human range: toes down 43°, up 20°
     { id: 'shoulderL', a: 'torso', b: 'upperL', x: 0, y: 1.40, lo: -1.0, hi: 3.0, rest: 0.1, k: 700, d: 18, max: 70 },
     { id: 'elbowL', a: 'upperL', b: 'foreL', x: 0, y: 1.14, lo: 0.0, hi: 2.5, rest: 0.25, k: 450, d: 12, max: 45 },
     { id: 'shoulderR', a: 'torso', b: 'upperR', x: 0, y: 1.40, lo: -1.0, hi: 3.0, rest: 0.1, k: 700, d: 18, max: 70 },
@@ -57,15 +65,16 @@ const BIPED = {
 
 /* What the brain senses, in order. The same layout is used for every skill so
    skills can later be merged into one brain.
-     6  torso tilt (sin, cos), spin, velocity x/y, height
-    20  joint angles and joint speeds
-     2  foot touching the ground (L, R)
-     2  foot height above the ground (L, R)
-     2  a 1 Hz clock (sin, cos)
-     4  task inputs (target dx, dy, holding, extra)
-     8  ground height ahead (from 0.1 m to 1.2 m in front)                      */
+     6  torso tilt (sin, cos), spin, velocity x/y, height              0-5
+    20  joint angles and joint speeds                                   6-25
+     4  pressure under each heel and toe (L heel, L toe, R heel, R toe) 26-29
+     2  foot height above the ground (L, R)                             30-31
+     2  a 1 Hz clock (sin, cos)                                         32-33
+     4  task inputs (target dx, dy, holding, extra)                     34-37
+     8  ground height ahead (from 0.1 m to 1.2 m in front)              38-45
+     3  energy left, leg tiredness, arm tiredness                       46-48   */
 const AHEAD = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0, 1.2];
-const SENSES = 6 + BIPED.joints.length * 2 + 2 + 2 + 2 + 4 + AHEAD.length;   // 44
+const SENSES = 6 + BIPED.joints.length * 2 + 4 + 2 + 2 + 4 + AHEAD.length + 3;   // 49
 const MOTORS = BIPED.joints.length + 1;                                       // + grip
 const SIZES = [SENSES, 32, MOTORS];
 // output groups for Evolution: legs (hips, knees, ankles) and arms + grip
@@ -101,13 +110,22 @@ class Biped {
     this.hand = this.parts.foreR;           // the right hand is the one that grips
     this.grip = null;                       // fixed joint while holding something
     this.fallen = false;
-    this.energy = 0;                        // how much the motor targets jumped around (tiny score penalty)
-    this.work = 0;                          // mechanical work done by the motors, joules (shown, not scored)
-    this.power = 0;                         // watts, smoothed
+    this.energyMax = opts.energy || 2000;   // joules in the store at the start
+    this.energyLeft = this.energyMax;
+    this.used = 0;                          // joules burned so far
+    this.power = 0;                         // watts, smoothed (for display)
     this.terrain = opts.terrain || null;    // obstacles on the ground, for sensing
+    for (const j of this.joints) j.fatigue = 0;
   }
   groundAt(x) { return this.terrain ? terrainHeight(this.terrain, x) : 0; }
   footClear(id) { const f = this.parts[id].translation(); return f.y - 0.03 - this.groundAt(f.x); }
+  /** Height above the ground of a foot's heel (end = -1) or toe (end = +1). */
+  footEnd(id, end) {
+    const f = this.parts[id], t = f.translation(), a = f.rotation();
+    const x = t.x + end * 0.11 * Math.cos(a) + 0.03 * Math.sin(a), y = t.y + end * 0.11 * Math.sin(a) - 0.03 * Math.cos(a);
+    return y - this.groundAt(x);
+  }
+  tiredness(group) { let s = 0, n = 0; for (const j of this.joints) if (group === 'legs' ? /hip|knee|ankle/.test(j.spec.id) : /shoulder|elbow/.test(j.spec.id)) { s += j.fatigue; n++; } return s / n; }
   angle(j) { return wrap(j.b.rotation() - j.a.rotation()); }
   /** Torso position relative to where this body started. */
   pos() { const t = this.torso.translation(); return { x: t.x - this.x0, y: t.y }; }
@@ -122,14 +140,14 @@ class Biped {
     out[i++] = v.x * 0.3; out[i++] = v.y * 0.3; out[i++] = t.translation().y - 1.2;
     for (const j of this.joints) { const s = j.spec; out[i++] = ((this.angle(j) - s.lo) / (s.hi - s.lo)) * 2 - 1; }
     for (const j of this.joints) out[i++] = (j.b.angvel() - j.a.angvel()) * 0.1;
-    const cl = this.footClear('footL'), cr = this.footClear('footR');
-    out[i++] = cl < 0.02 ? 1 : 0; out[i++] = cr < 0.02 ? 1 : 0;
-    out[i++] = Math.min(1, cl * 5); out[i++] = Math.min(1, cr * 5);
+    for (const id of ['footL', 'footR']) for (const end of [-1, 1]) out[i++] = Math.max(0, 1 - this.footEnd(id, end) / 0.015);   // pressure: 1 = pressed down
+    out[i++] = Math.min(1, this.footClear('footL') * 5); out[i++] = Math.min(1, this.footClear('footR') * 5);
     out[i++] = Math.sin(time * Math.PI * 2); out[i++] = Math.cos(time * Math.PI * 2);   // a 1 Hz clock: a rhythm to walk to
     out[i++] = task ? task.dx : 0; out[i++] = task ? task.dy : 0;
     out[i++] = this.grip ? 1 : 0; out[i++] = task ? task.a : 0;
     const tx = t.translation().x;
     for (const d of AHEAD) out[i++] = this.groundAt(tx + d) * 5;                         // what's on the ground ahead
+    out[i++] = this.energyLeft / this.energyMax; out[i++] = this.tiredness('legs'); out[i++] = this.tiredness('arms');
     return out;
   }
   /** actions[] in -1..1: one per joint (0 = relaxed standing pose) then grip. */
@@ -137,27 +155,38 @@ class Biped {
     for (let k = 0; k < this.joints.length; k++) {
       const j = this.joints[k], s = j.spec, u = Math.max(-1, Math.min(1, actions[k]));
       let target = u >= 0 ? s.rest + u * (s.hi - s.rest) : s.rest + u * (s.rest - s.lo);
-      if (override && override[s.id] !== undefined) target = override[s.id];   // teaching: a joint held where you put it
-      this.energy += Math.abs(target - j.target);
+      if (override && override[s.id] !== undefined) target = override[s.id];   // testing: a joint you're moving
       j.target = target;
       j.joint.configureMotorPosition(target, s.k, s.d);
     }
   }
+  /** Brain off: motors go slack (a little damping so it isn't a rag in a hurricane). */
+  relax() { for (const j of this.joints) { j.target = this.angle(j); j.joint.configureMotorPosition(j.target, 0, 4); } }
   /** Joint angles as { jointId: angle }, plus 'torso' (world tilt). Same shape as a motion-clip pose. */
   pose() {
     const p = { torso: wrap(this.torso.rotation()) };
     for (const j of this.joints) p[j.spec.id] = this.angle(j);
     return p;
   }
-  /** Energy meter: motor torque × joint speed, summed (joules). Call once per physics step. */
-  meter() {
-    let w = 0;
+  /** Muscles: energy and fatigue. Call once per physics step.
+      Energy: a resting cost, plus every motor costs energy in proportion to how hard it pushes, even
+      when holding still (like real muscle), plus the work it does. Fatigue: sustained effort tires a
+      joint, rest recovers it, and a tired joint is weaker. An empty energy store makes everything weak. */
+  muscles() {
+    let w = BASAL_W;
+    const low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));    // running on empty: crippling (agents learned to stand on empty)
     for (const j of this.joints) {
       const s = j.spec, rel = j.b.angvel() - j.a.angvel();
       const torque = Math.max(-s.max, Math.min(s.max, s.k * (j.target - this.angle(j)) - s.d * rel));
-      w += Math.abs(torque * rel);
+      const effort = Math.abs(torque) / s.max;
+      w += HOLD_W_PER_NM * Math.abs(torque) + WORK_EFF * Math.abs(torque * rel);
+      // effort cubed: walking-level effort (~0.5) barely tires (settles ~20%), hard sustained effort (tiptoe, ~0.9) wears out fast
+      j.fatigue = Math.max(0, Math.min(1, j.fatigue + DT * (TIRE * effort * effort * effort - RECOVER * j.fatigue)));
+      const strength = (1 - 0.6 * j.fatigue) * low;
+      if (Math.abs(strength - (j.strength || 1)) > 0.01) { j.strength = strength; j.joint.setMotorMaxForce(s.max * strength); }
     }
-    this.work += w * DT;
+    this.energyLeft = Math.max(0, this.energyLeft - w * DT);
+    this.used += w * DT;
     this.power += (w - this.power) * 0.05;
   }
   checkFallen() {
@@ -253,12 +282,9 @@ function placeTerrain(R, world, terrain) {
   }
 }
 
-/* ---------- motion clips: reference movements and your demonstrations ----------
+/* ---------- reference movements: what a person would do (shown as a ghost, never trained on) ----------
    A clip is keyframed joint angles: { name, skill, loop, period, keys: [{ t, pose, grip }] }
-   pose = { torso: world tilt, hipL: angle, ... } (missing joints = relaxed pose).
-   Looping clips last 1 s per cycle, so they line up with the brain's 1 Hz clock.
-   Clips are only ever an optional hint: training imitates one only when asked.
-   Optional clip.joints limits which joints are compared (the reference pick-up only guides the arm). */
+   pose = { torso: world tilt, hipL: angle, ... } (missing joints = relaxed pose).          */
 const POSE_KEYS = ['torso'].concat(BIPED.joints.map(j => j.id));
 const REST_POSE = { torso: 0 };
 for (const j of BIPED.joints) REST_POSE[j.id] = j.rest;
@@ -283,9 +309,8 @@ function walkReference() {
 const REFERENCE = {
   stand: { id: 'ref-stand', name: 'Reference stance', skill: 'stand', loop: true, period: 1, keys: [{ t: 0, grip: 0, pose: Object.assign({}, REST_POSE) }] },
   walk: walkReference(),
-  // Raise the straight right arm forward, close the hand as it meets the glass, keep raising to lift.
-  // Only the right arm is guided (joints), so each agent keeps its own way of standing.
-  grab: { id: 'ref-grab', name: 'Reference pick-up', skill: 'grab', loop: false, period: 5, joints: ['shoulderR', 'elbowR'], keys: [
+  // raise the straight right arm forward, close the hand as it meets the glass, keep raising to lift
+  grab: { id: 'ref-grab', name: 'Reference pick-up', skill: 'grab', loop: false, period: 5, keys: [
     { t: 0, grip: 0, pose: Object.assign({}, REST_POSE) },
     { t: 1.0, grip: 0, pose: { shoulderR: 0.4, elbowR: 0.05 } },
     { t: 1.8, grip: 1, pose: { shoulderR: 0.8, elbowR: 0.05 } },
@@ -311,12 +336,6 @@ function clipPose(clip, t) {
   for (const k of POSE_KEYS) out[k] = pa[k] + (pb[k] - pa[k]) * f;
   return out;
 }
-/** How far a body's pose is from a target pose (mean squared radians; the torso counts double). */
-function poseError(pose, target, keys) {
-  let e = 0, n = 0;
-  for (const k of keys || POSE_KEYS) { const w = k === 'torso' ? 2 : 1, d = wrap(pose[k] - target[k]); e += w * d * d; n += w; }
-  return e / n;
-}
 /** Where every part would be for a pose, given the torso position: used to draw ghosts. */
 function poseParts(pose, tx, ty) {
   const out = { torso: { x: tx, y: ty, a: pose.torso } };
@@ -329,19 +348,23 @@ function poseParts(pose, tx, ty) {
   }
   return out;
 }
-const IMITATE_WEIGHT = 1.5;   // score per second of moving like the clip (perfect match)
 
 /* ---------- tasks: how an attempt is set up, sensed and scored ----------
-   setup(lane)            -> per-agent state (objects it gets)
+   energy                 -> joules in the store for this attempt
+   setup(R, world, x0, variant, hard, trial) -> per-agent state (objects it gets)
    senseTask(st, body)    -> { dx, dy, a } extra inputs
-   step(st, body, motors) -> called every physics step after act()
-   score(st, body)        -> fitness (higher is better)                          */
+   step(st, body, motors, trial) -> called every physics step after act()
+   done(st, body)         -> optional: finished early (reached the goal)
+   score(st, body)        -> fitness (higher is better)
+   Every task adds energy left at the end to the score: the same job done for less energy wins.
+   Energy is in game joules: a fully tensed body burns ~10 kW, a relaxed one a few hundred W.     */
 const GLASS = { hx: 0.035, hy: 0.06, density: 36 };
 const GRIP_REACH = 0.11;    // palm centre to glass surface for the hand to close on it (fingers reach ~10 cm)
-const TABLE = { hx: 0.022, hy: 0.015 };   // a narrow wall ledge, hung from above; the glass overhangs it on both sides   // hand centre to glass surface, for the hand to close on it
+const TABLE = { hx: 0.16, hy: 0.02, leg: 0.015, density: 115 };   // a free-standing table, ~8 kg: it slides and tips
+const energyBonus = body => 3 * body.energyLeft / body.energyMax;
 const TASKS = {
   stand: {
-    name: 'Stand', seconds: 8,
+    name: 'Stand', seconds: 8, energy: 14000,
     blurb: 'Stay on your feet and stay put, even when something shoves you.',
     setup() { return { alive: 0, drift: 0, wide: 0 }; },
     senseTask() { return null; },
@@ -353,42 +376,52 @@ const TASKS = {
       // a shove every 2 seconds, alternating direction, getting stronger with the curriculum
       if (trial && trial.steps % 120 === 60) body.torso.applyImpulse({ x: (trial.steps % 240 === 60 ? 1 : -1) * 28 * trial.hard, y: 0 }, true);
     },
-    score(st, body) { return st.alive - Math.min(st.drift, 2) * 0.5 - st.wide * 2 - (body.fallen ? 2 : 0) - body.energy * 0.0005; },
+    score(st, body) { return st.alive - Math.min(st.drift, 2) * 0.5 - st.wide * 2 - (body.fallen ? 2 : 0) + energyBonus(body); },
     describe(st, body) { return body.fallen ? `fell after ${st.alive.toFixed(1)} s` : `standing · drifted ${(st.drift * 100).toFixed(0)} cm`; },
     success(st, body) { return !body.fallen; },
     successText: 'stayed standing through every shove',
   },
   walk: {
-    name: 'Walk', seconds: 10, terrain: true,
-    blurb: 'Get as far to the right as you can without falling over. Sticks and logs on the ground get bigger as training goes on.',
-    setup() { return { best: 0, alive: 0 }; },
-    senseTask() { return null; },
-    step(st, body) { st.best = Math.max(st.best, body.pos().x); st.alive += DT; },
-    score(st, body) {
-      // distance, plus a little for every second upright so "dive forward" doesn't win
-      return body.pos().x + st.alive * 0.3 - (body.fallen ? 2 : 0) - body.energy * 0.0005;
+    // Food is far away and the energy store is limited: a wasteful gait runs out before it gets there.
+    name: 'Walk to food', seconds: 18, terrain: true,
+    blurb: 'Food is 6 to 10 m away and you only have so much energy. Sticks and logs appear as training goes on.',
+    energyFor: foodX => 20000 + 2500 * foodX,
+    setup(R, world, x0, variant, hard, trial) { return { alive: 0, foodX: trial ? trial.foodX : 10, reachedAt: null }; },
+    senseTask(st, body) { return { dx: Math.max(-1, Math.min(1, (st.foodX - body.pos().x) / 10)), dy: 0, a: 0 }; },
+    step(st, body, motors, trial) {
+      st.alive += DT;
+      if (st.reachedAt === null && body.pos().x >= st.foodX - 0.3) st.reachedAt = trial ? trial.time : 0;
     },
-    describe(st, body) { return `${body.pos().x.toFixed(2)} m${body.fallen ? ' · fell' : ''}`; },
-    success(st, body) { return !body.fallen && body.pos().x >= 5; },
-    successText: 'walked 5 m without falling',
+    done(st) { return st.reachedAt !== null; },
+    score(st, body) {
+      const x = Math.min(body.pos().x, st.foodX);
+      let f = x + st.alive * 0.3 - (body.fallen ? 2 : 0);
+      // got there: sooner is better (time matters), and energy to spare is better (energy matters).
+      // Without the time part they learned a slow, careful shuffle that saved energy.
+      if (st.reachedAt !== null) f += 5 + 4 * (1 - st.reachedAt / 18) + energyBonus(body) * 2;
+      return f;
+    },
+    describe(st, body) { return st.reachedAt !== null ? `reached the food in ${st.reachedAt.toFixed(1)} s · ${Math.round(100 * body.energyLeft / body.energyMax)}% energy left` : `${body.pos().x.toFixed(1)} of ${st.foodX.toFixed(1)} m${body.fallen ? ' · fell' : body.energyLeft <= 0 ? ' · out of energy' : ''}`; },
+    success(st) { return st.reachedAt !== null; },
+    successText: 'reached the food',
   },
   grab: {
-    name: 'Pick up the glass', seconds: 7,
-    blurb: 'A glass of water is on a table. Pick it up and lift it without spilling.',
+    name: 'Pick up the glass', seconds: 7, energy: 12000,
+    blurb: 'A glass of water stands on a free-standing table. Pick it up and lift it without spilling or knocking the table over.',
     setup(R, world, x0, variant, hard) {
-      // curriculum: the glass starts within arm's reach and moves farther away (and around) as training goes on
+      // curriculum: the glass starts within easy reach and moves around as training goes on.
+      // The table is free-standing (~8 kg): lean on it and it slides, bump it hard and it tips over.
       const h = hard === undefined ? 1 : hard;
-      // A small wall shelf hung from above, placed on the path a straight arm takes when you raise it forward.
-      // Earlier versions taught us why: a solid block tripped forward feet, a tabletop sat in the arm's way
-      // (agents pressed their hand under it, or even gripped through it), and a table far enough away
-      // needed an awkward over-the-top reach that evolution never found.
-      const gx = 0.52 + 0.06 * h + (variant || 0) * 0.07 * h, top = 0.96 + 0.03 * (variant || 0) * h, tx = gx;
-      const table = world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(x0 + tx, top - TABLE.hy));
+      const gx = 0.52 + 0.06 * h + (variant || 0) * 0.07 * h, top = 0.96 + 0.03 * (variant || 0) * h;
+      const tx = gx - GLASS.hx + 0.01 + TABLE.hx;            // the glass overhangs the front edge by 1 cm
       const tg = groups(GROUP.OBJECT, GROUP.GROUND | GROUP.BODY | GROUP.OBJECT);
-      world.createCollider(R.ColliderDesc.cuboid(TABLE.hx, TABLE.hy).setFriction(0.8).setCollisionGroups(tg), table);
+      const table = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x0 + tx, top - TABLE.hy));
+      world.createCollider(R.ColliderDesc.cuboid(TABLE.hx, TABLE.hy).setDensity(TABLE.density).setFriction(0.8).setCollisionGroups(tg), table);
+      const legH = (top - 2 * TABLE.hy) / 2;
+      for (const side of [-1, 1]) world.createCollider(R.ColliderDesc.cuboid(TABLE.leg, legH).setTranslation(side * (TABLE.hx - TABLE.leg), -TABLE.hy - legH).setDensity(TABLE.density).setFriction(0.6).setCollisionGroups(tg), table);
       const glass = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x0 + gx, top + GLASS.hy + 0.001).setAngularDamping(1.5));
-      world.createCollider(R.ColliderDesc.cuboid(GLASS.hx, GLASS.hy).setDensity(GLASS.density).setFriction(1.0).setCollisionGroups(groups(GROUP.OBJECT, GROUP.GROUND | GROUP.BODY | GROUP.OBJECT)), glass);
-      return { table, glass, tx, top, rest: top + GLASS.hy, minDist: 9, grabbed: false, lift: 0, spilled: false, liftAtSpill: 0, alive: 0, reward: 0, touched: 0, held: 0 };
+      world.createCollider(R.ColliderDesc.cuboid(GLASS.hx, GLASS.hy).setDensity(GLASS.density).setFriction(1.0).setCollisionGroups(tg), glass);
+      return { table, glass, gx, top, tableHome: x0 + tx, rest: top + GLASS.hy, minDist: 9, grabbed: false, lift: 0, spilled: false, tableOver: false, alive: 0, reward: 0, touched: 0, held: 0 };
     },
     senseTask(st, body) {
       const g = st.glass.translation(), h = body.handPos();
@@ -396,46 +429,44 @@ const TASKS = {
     },
     step(st, body, motors, trial) {
       st.alive += DT;
-      const h = body.handPos(), d = distToBox(h, st.glass, GLASS.hx, GLASS.hy);
+      const h = body.handPos(), d = distToBox(h, st.glass, GLASS.hx, GLASS.hy), tt = st.table.translation();
       st.minDist = Math.min(st.minDist, d);
       // Grip assist that fades out: early in training the hand closes on the glass whenever it
       // touches it; as the assist fades the brain's own grip signal has to be higher and higher.
       const assist = trial ? trial.assist : 0, threshold = -assist, g = motors[MOTORS - 1];
-      // touching needs the hand at or above the table surface: with a long reach, Kit learned to grip the
-      // glass from under the tabletop, through the table, and then couldn't lift it
-      const underShelf = Math.abs(h.x - st.tx) < TABLE.hx + 0.01 && h.y < st.top - 0.02;   // only right under the ledge itself is blocked
-      const touching = d < GRIP_REACH && !underShelf;
+      // no gripping through the table from underneath (agents tried)
+      const underTable = Math.abs(h.x - tt.x) < TABLE.hx + 0.01 && h.y < tt.y - TABLE.hy;
+      const touching = d < GRIP_REACH && !underTable;
       if (touching) st.touched += DT;
       if (g > threshold && !body.grip && !st.spilled && touching) { body.holdObject(st.glass, GLASS.hx, GLASS.hy); st.grabbed = true; }
       else if (g < threshold - 0.2 && body.grip) body.release();
-      if (!st.spilled && Math.abs(wrap(st.glass.rotation())) > 0.9) { st.spilled = true; st.liftAtSpill = st.lift; if (body.grip) body.release(); }
+      if (!st.tableOver && Math.abs(wrap(st.table.rotation())) > 0.6) st.tableOver = true;
+      if (!st.spilled && (Math.abs(wrap(st.glass.rotation())) > 0.9 || st.glass.translation().y < 0.5)) { st.spilled = true; if (body.grip) body.release(); }
       const lift = st.glass.translation().y - st.rest, holding = body.grip && !st.spilled;
       if (holding) { st.lift = Math.max(st.lift, lift); st.held += DT; }
       // a reward for every step of the job, paid every moment (a hand swinging past earns little).
-      // Reach is measured to where a hand would grip: the near side of the glass, up high. Measured to the
-      // glass itself, Kit learned to press its hand under the tabletop, 9 cm away but on the wrong side.
+      // Reach is measured to where a hand would grip: the near side of the glass, up high.
       const ga = st.glass.rotation(), gt = st.glass.translation(), ox = -GLASS.hx - 0.045, oy = GLASS.hy * 0.5;
       const reach = Math.hypot(h.x - (gt.x + ox * Math.cos(ga) - oy * Math.sin(ga)), h.y - (gt.y + ox * Math.sin(ga) + oy * Math.cos(ga)));
-      let r = 1 - Math.min(1, reach / 1.0);                                // 1. get the hand to the glass (felt from 1 m away)
+      let r = 1 - Math.min(1, reach / 1.0);                                // 1. get the hand to the glass
       if (touching) r += 1;                                                // 2. touch it
       if (holding) r += 2                                                  // 3. hold it
-        + 30 * Math.max(0, Math.min(lift, 0.25))                           // 4. lift it (worth much more than just holding)
+        + 30 * Math.max(0, Math.min(lift, 0.25))                           // 4. lift it
         + (1 - Math.min(1, Math.abs(wrap(st.glass.rotation())) / 0.9));    // 5. keep it upright
       st.reward += r * DT;
     },
     score(st, body) {
-      let f = st.reward;
+      let f = st.reward + st.alive * 0.3 + energyBonus(body);
       if (st.spilled) f -= 2;
+      if (st.tableOver) f -= 2;
       if (body.fallen) f -= 3;
-      f += st.alive * 0.3;                               // staying on your feet
-      return f - body.energy * 0.0003;
+      return f;
     },
     describe(st, body) {
-      return st.spilled ? 'spilled' : body.grip ? `holding · lifted ${(Math.max(0, st.lift) * 100).toFixed(0)} cm` : st.grabbed ? 'dropped it' : `hand ${(st.minDist * 100).toFixed(0)} cm away`;
+      return st.tableOver ? 'knocked the table over' : st.spilled ? 'spilled' : body.grip ? `holding · lifted ${(Math.max(0, st.lift) * 100).toFixed(0)} cm` : st.grabbed ? 'dropped it' : `hand ${(st.minDist * 100).toFixed(0)} cm away`;
     },
-    success(st, body) { return !st.spilled && !!body.grip && st.lift >= 0.1 && !body.fallen; },
+    success(st, body) { return !st.spilled && !st.tableOver && !!body.grip && st.lift >= 0.1 && !body.fallen; },
     successText: 'lifted the glass 10 cm without spilling',
-    remove(world, st) { world.removeRigidBody(st.glass); world.removeRigidBody(st.table); },
   },
 };
 
@@ -453,21 +484,25 @@ class Trial {
     this.keepSimulating = !!opts.keepSimulating;   // watching: let a fallen body finish falling
     this.noise = opts.noise === undefined ? 0.02 : opts.noise;
     this.assist = opts.assist || 0;                  // grab: grip assist, 1 = hand closes on touch, 0 = brain decides
-    this.imitate = opts.imitate || null;             // optional motion clip to imitate (reference or your demonstration)
-    this.override = opts.override || null;           // teaching: { jointId: angle } held by you, not the brain
-    this.gripOverride = opts.gripOverride === undefined ? null : opts.gripOverride;   // teaching: hand forced open (-1) or closed (1)
+    this.override = opts.override || null;           // test mode: { jointId: angle } you're moving
+    this.gripOverride = opts.gripOverride === undefined ? null : opts.gripOverride;   // test mode: hand forced open (-1) or closed (1)
+    this.brainOff = false;                           // test mode: motors slack, the body doesn't react
     this.rng = Brain.makeRng(opts.seed || 1);
     this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.4 * (opts.push === undefined ? 1 : opts.push);
     this.terrainLevel = opts.terrainLevel === undefined ? this.hard : opts.terrainLevel;
     this.terrain = opts.terrain || (this.task.terrain ? makeTerrain(this.rng, this.terrainLevel) : []);
+    this.foodX = opts.foodX || 6 + 3.5 * this.hard + this.rng() * this.hard;   // walk: food gets farther with the curriculum (6 → 9.5-10.5 m)
+    // energy gets scarce with the curriculum: 5x the store at first (learn to balance stiffly, like a toddler),
+    // the real store at full difficulty (then only relaxed, efficient bodies last)
+    this.energy = opts.energy || (this.task.energyFor ? this.task.energyFor(this.foodX) : this.task.energy) * (1 + 4 * (1 - this.hard));
     this.agents = brains.map(params => {
       const world = makeWorld(R);
       if (this.terrain.length) placeTerrain(R, world, this.terrain);
-      const body = new Biped(R, world, 0, { terrain: this.terrain });
+      const body = new Biped(R, world, 0, { terrain: this.terrain, energy: this.energy });
       body.torso.setLinvel({ x: push, y: 0 }, true);
-      const st = this.task.setup(R, world, 0, this.variant, this.hard);
-      return { world, body, st, net: new Brain.Network(SIZES, params), done: false, imit: 0 };
+      const st = this.task.setup(R, world, 0, this.variant, this.hard, this);
+      return { world, body, st, net: new Brain.Network(SIZES, params), done: false };
     });
   }
   get finished() { return this.steps >= this.maxSteps || this.agents.every(a => a.done); }
@@ -479,26 +514,26 @@ class Trial {
       if (this.noise) for (let i = 0; i < inp.length; i++) inp[i] += (rng() - 0.5) * 2 * this.noise;
       const out = a.net.forward(inp);
       if (this.gripOverride !== null) out[MOTORS - 1] = this.gripOverride;
-      a.body.act(out, this.override);
+      if (this.brainOff) a.body.relax(); else a.body.act(out, this.override);
       this.task.step(a.st, a.body, out, this);
       a.body.wristReflex();
       a.world.step();
-      a.body.meter();
-      if (this.imitate) a.imit += Math.exp(-2 * poseError(a.body.pose(), clipPose(this.imitate, this.time), this.imitate.joints)) * DT;
+      a.body.muscles();
       if (a.body.checkFallen()) { a.done = true; a.fitness = this.score(a); a.success = false; }
+      else if (this.task.done && this.task.done(a.st, a.body)) { a.done = true; a.fitness = this.score(a); a.success = true; }
     }
     this.time += DT; this.steps++;
   }
   run() { while (!this.finished) this.step(); return this.scores(); }
-  score(a) { return this.task.score(a.st, a.body) + (this.imitate ? a.imit * IMITATE_WEIGHT : 0); }
+  score(a) { return this.task.score(a.st, a.body); }
   scores() { return this.agents.map(a => a.fitness !== undefined ? a.fitness : this.score(a)); }
-  successes() { return this.agents.map(a => a.success === false ? false : !!this.task.success(a.st, a.body)); }
+  successes() { return this.agents.map(a => a.success !== undefined ? a.success : !!this.task.success(a.st, a.body)); }
   free() { for (const a of this.agents) a.world.free(); this.agents = []; }
 }
 
 /** Senses that a skill never uses (always 0 while training it), by index into the sense list. */
-const SENSE_TASK = [32, 33, 34, 35], SENSE_AHEAD = AHEAD.map((_, i) => 36 + i);
-const UNUSED_SENSES = { stand: SENSE_TASK.concat(SENSE_AHEAD), walk: SENSE_TASK, grab: SENSE_AHEAD };
+const SENSE_TASK = [34, 35, 36, 37], SENSE_AHEAD = AHEAD.map((_, i) => 38 + i);
+const UNUSED_SENSES = { stand: SENSE_TASK.concat(SENSE_AHEAD), walk: [35, 36, 37], grab: SENSE_AHEAD };
 /** Start skill `to` from a brain trained on skill `from`: cut the connections from senses that were
     always blank in `from`. Their weights were never tested, so leaving them in makes the brain flail
     the moment those senses light up (a Stand brain fell within 0.4 s when it first saw the glass). */
@@ -521,7 +556,7 @@ const hardness = generation => Math.min(1, generation / 150);
 /** The episodes every brain in a generation is tested on (same for all, so it's fair). */
 /** Grip assist for a generation: full at first, gone by generation 200. */
 const gripAssist = generation => Math.max(0, 1 - generation / 200);
-function episodeConfigs(taskId, generation, imitate) {
+function episodeConfigs(taskId, generation) {
   const hard = hardness(generation), n = taskId === 'grab' ? 3 : 2, out = [];
   for (let e = 0; e < n; e++) out.push({
     seed: generation * 7919 + e * 104729 + 1,
@@ -529,7 +564,6 @@ function episodeConfigs(taskId, generation, imitate) {
     hard, push: hard, noise: 0.02 * hard,             // curriculum: shoves, sensor noise and obstacles grow with training
     assist: taskId === 'grab' ? gripAssist(generation) : 0,
     terrainLevel: terrainLevel(generation),
-    imitate: imitate || null,
   });
   return out;
 }
@@ -541,8 +575,8 @@ function combineScores(perEpisode) {
   });
 }
 /** Scores a whole population in one go (used for training outside the page, e.g. in Node). */
-function evaluate(R, taskId, population, generation, imitate) {
-  return combineScores(episodeConfigs(taskId, generation, imitate).map(cfg => {
+function evaluate(R, taskId, population, generation) {
+  return combineScores(episodeConfigs(taskId, generation).map(cfg => {
     const tr = new Trial(R, taskId, population, cfg), sc = tr.run();
     tr.free();
     return sc;
@@ -550,7 +584,8 @@ function evaluate(R, taskId, population, generation, imitate) {
 }
 
 const api = { DT, BIPED, SENSES, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
-  makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseError, poseParts, IMITATE_WEIGHT, GROUP, groups };
+  makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

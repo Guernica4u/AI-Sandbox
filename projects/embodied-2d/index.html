@@ -8,27 +8,27 @@
  every movement you see is a small neural network driving the motors.
 
  Modes
-   Watch   see an agent try its skill; show the reference "ideal" as a ghost;
-           test it 10 times for a success rate
-   Train   48 variations per generation; optionally "learn from" the reference
-           movement or your own demonstration (off by default)
-   Teach   move the agent's limbs yourself (drag any part, or use sliders) while
-           its brain keeps fighting you; record keyframes as a demonstration.
-           Teaching never changes a brain or a training run.
+   Watch   see an agent try its skill; show the reference "ideal" as a ghost
+           (for comparison only, never trained on); success check over 10 runs
+   Train   48 variations per generation, in the background
+   Test    move the agent's limbs yourself (drag a part, or use sliders) and see
+           how it reacts; switch its brain off (limp) or freeze time.
+           Nothing here ever changes a brain or a training run.
+
+ Realism: muscles cost energy even when holding still, tire with sustained
+ effort, and every attempt has a limited energy store (Walk: food far away).
 
  Files
    vendor/rapier2d.js  Rapier 2D physics (Apache-2.0), bundled as a plain script
    brain.js            networks + evolution + brain file format (engine-agnostic, reused for 3D)
-   body2d.js           the body, the world, obstacles, tasks, motion clips
+   body2d.js           the body, muscles (energy/fatigue), the world, obstacles, tasks
    starters.js         pretrained example agents (Kit, Juno, Pax)
    index.html          this page
 
  AGENT FILE FORMAT  (format "glassbox-body-agent", formatVersion 1)
  { "format": "glassbox-body-agent", "formatVersion": 1, "app": "Glass Box",
-   "name": "Kit", "seed": 1, "bodyPlan": "biped2d-v2",
-   "skills": { "stand": <glassbox-body-brain>, "walk": ..., "grab": ... },
-   "demos": { "walk": <motion clip, see body2d.js> },        (optional)
-   "learnFrom": { "walk": "none" | "ref" | "demo" } }         (optional)
+   "name": "Kit", "seed": 1, "bodyPlan": "biped2d-v3",
+   "skills": { "stand": <glassbox-body-brain>, "walk": ..., "grab": ... } }
  A single "glassbox-body-brain" file (see brain.js) can also be imported.
 ================================================================================
 -->
@@ -76,8 +76,8 @@ header .right { margin-left: auto; display: flex; gap: 8px; align-items: center;
 .stage { position: relative; aspect-ratio: 16 / 8; background: #0d0f12; border-bottom: 1px solid var(--line); touch-action: none; }
 @media (max-width: 640px) { .stage { aspect-ratio: 4 / 3; } .seg button { padding: 7px 9px; } }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
-.stage.teach canvas { cursor: grab; }
-.stage.teach.dragging canvas { cursor: grabbing; }
+.stage.test canvas { cursor: grab; }
+.stage.test.dragging canvas { cursor: grabbing; }
 .stage .hint { position: absolute; right: 12px; bottom: 10px; font: 11px var(--mono); color: var(--faint); pointer-events: none; text-align: right; }
 
 .bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 12px; }
@@ -113,9 +113,10 @@ select { background: var(--surface2); border: 1px solid var(--line2); padding: 6
 canvas.fill { display: block; width: 100%; }
 #brainCanvas { height: 300px; }
 #chart { height: 150px; }
-.joints { display: grid; grid-template-columns: 78px 1fr 46px; gap: 5px 8px; align-items: center; font: 11px var(--mono); }
+.joints { display: grid; grid-template-columns: 78px 1fr 40px 46px; gap: 5px 8px; align-items: center; font: 11px var(--mono); }
 .joints .n { color: var(--muted); }
 .joints .n.held { color: var(--signal); }
+.joints .f { font-size: 10px; text-align: right; }
 .joints .v { color: var(--faint); text-align: right; }
 .jbar { position: relative; height: 10px; background: var(--surface2); border: 1px solid var(--line); }
 .jbar i { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--text); }
@@ -125,14 +126,6 @@ canvas.fill { display: block; width: 100%; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font: 11px var(--mono); color: var(--faint); }
 .legend span::before { content: ""; display: inline-block; width: 10px; height: 2px; margin-right: 6px; vertical-align: middle; background: currentColor; }
 .legend .best { color: var(--hue); } .legend .mean { color: var(--faint); }
-
-/* teach */
-.keys { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; min-height: 30px; align-items: center; }
-.key { font: 12px var(--mono); border: 1px solid var(--line2); background: var(--surface2); padding: 4px 8px; cursor: pointer; }
-.key[aria-pressed="true"] { border-color: var(--signal); color: var(--signal); }
-.key i { font-style: normal; color: var(--water); margin-left: 4px; }
-.teachrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
-.teachrow input[type=number] { width: 74px; background: var(--bg); border: 1px solid var(--line2); padding: 5px 6px; font: 12px var(--mono); }
 
 .about { color: var(--muted); font-size: 13px; }
 .about p { margin: 0 0 8px; }
@@ -178,21 +171,15 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
         <div class="seg" id="modeTabs" role="group" aria-label="Mode">
           <button data-mode="watch" aria-pressed="true">Watch</button>
           <button data-mode="train" aria-pressed="false">Train</button>
-          <button data-mode="teach" aria-pressed="false">Teach</button>
+          <button data-mode="test" aria-pressed="false">Test</button>
         </div>
       </div>
       <div class="bar" id="watchCtl">
         <button class="btn" id="restart">Restart</button>
-        <button class="btn" id="testBtn">Test 10 runs</button>
+        <button class="btn" id="checkBtn">Success check</button>
         <label class="check"><input type="checkbox" id="ghostOn"> Show ideal (ghost)</label>
       </div>
       <div class="bar" id="trainCtl" hidden>
-        <label class="label" for="learnFrom">Learn from</label>
-        <select id="learnFrom">
-          <option value="none">Nothing (just the score)</option>
-          <option value="ref">Reference movement</option>
-          <option value="demo">My demonstration</option>
-        </select>
         <label class="label" for="speed">Speed</label>
         <select id="speed">
           <option value="1">Real time (watch every try)</option>
@@ -201,10 +188,10 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
         </select>
         <button class="btn go" id="trainBtn">Start training</button>
       </div>
-      <div class="bar" id="teachCtl" hidden>
+      <div class="bar" id="testCtl" hidden>
+        <button class="btn" id="brainBtn">Brain: on</button>
+        <button class="btn" id="freezeBtn">Freeze time</button>
         <label class="check"><input type="checkbox" id="harnessOn" checked> Harness (hold the hips up)</label>
-        <button class="btn" id="holdBtn">Hold pose</button>
-        <button class="btn" id="letGoBtn">Let go</button>
         <button class="btn" id="handBtn">Hand: brain</button>
         <button class="btn" id="standUp">Reset body</button>
       </div>
@@ -214,32 +201,9 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
         <div><span class="label">Difficulty</span><b id="stHard">—</b></div>
         <div><span class="label">Success</span><b id="stSuccess">—</b><small id="stSuccessNote">not tested</small></div>
         <div><span class="label" id="stOutLabel">Right now</span><b id="stOut">—</b></div>
-        <div><span class="label">Energy used</span><b id="stEnergy">—</b><small>not scored (yet)</small></div>
+        <div><span class="label">Energy left</span><b id="stEnergy">—</b><small id="stTired">—</small></div>
       </div>
       <div class="skillnote" id="skillNote"></div>
-    </section>
-
-    <section class="panel" id="teachPanel" hidden>
-      <div class="head"><span class="label" id="teachTitle">Demonstration</span>
-        <span class="teachrow" style="margin:0">
-          <label class="check"><input type="checkbox" id="clipLoop"> Loop (1 s cycle)</label>
-          <button class="btn small" id="loadRef">Start from reference</button>
-          <button class="btn small" id="clearClip">Clear</button>
-        </span>
-      </div>
-      <div class="body">
-        <div class="about">Pose the body (drag parts, or use the sliders below), then <b>Add key</b>. Add a few keys at different times and press <b>Play</b> to see them blend. <b>Save</b> keeps it as this agent's demonstration for this skill; it only affects training if you pick "Learn from: My demonstration".</div>
-        <div class="keys" id="keys"></div>
-        <div class="teachrow">
-          <label class="label" for="keyTime">Time</label><input type="number" id="keyTime" step="0.05" min="0" value="0">
-          <button class="btn" id="addKey">Add key</button>
-          <button class="btn" id="updKey" disabled>Update key</button>
-          <button class="btn" id="delKey" disabled>Delete key</button>
-          <span class="grow"></span>
-          <button class="btn" id="playClip">Play</button>
-          <button class="btn go" id="saveClip">Save demonstration</button>
-        </div>
-      </div>
     </section>
 
     <section class="panel">
@@ -263,9 +227,10 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
     <section class="panel">
       <div class="head"><span class="label">How this works</span></div>
       <div class="body about">
-        <p>Each body has <b>10 motorised joints</b> (both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, feet, the ground ahead, where the glass is) and sets a target for every motor.</p>
-        <p><b>Nobody programs the movements.</b> Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, then sticks and logs on the ground, and the grip assist fades away.</p>
-        <p><b>Teach</b> lets you move the limbs yourself while the brain keeps fighting you. Your keyframes become a demonstration that training can learn from, only if you choose it.</p>
+        <p>Each body has <b>10 motorised joints</b> (both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, pressure under heels and toes, the ground ahead, its energy and tiredness, where the goal is) and sets a target for every motor.</p>
+        <p><b>Nobody programs the movements</b>, and nothing copies a human: the ghost is only there to compare. Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, food farther away, sticks and logs, and the grip assist fades away.</p>
+        <p><b>Muscles are realistic-ish:</b> pushing costs energy even when holding still, sustained effort tires a joint, and every attempt has a limited energy store. In Walk the food is far away, so a wasteful way of walking runs out before it gets there.</p>
+        <p><b>Test</b> lets you move the limbs and see how the agent reacts. Switch the brain off to see the body go limp, or freeze time. Nothing there affects learning.</p>
         <p>New agents start knowing nothing. <b>Kit, Juno and Pax</b> are trained examples.</p>
       </div>
     </section>
@@ -293,30 +258,29 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
 const { DT, BIPED, SIZES, MOTORS, TASKS, GLASS, TABLE, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
-  REFERENCE, REST_POSE, POSE_KEYS, clipPose, poseParts } = Body2D;
+  REFERENCE, clipPose, poseParts } = Body2D;
 let R = null;
 
 const SKILLS = ['stand', 'walk', 'grab'];
 const SKILL_NOTES = {
   stand: '<strong>Stand.</strong> Stay upright and in place while something shoves you every 2 seconds. Sitting, kneeling and the splits count as falling. Scored on time on your feet, minus drifting and a too-wide stance.',
-  walk: '<strong>Walk.</strong> Get as far right as possible in 10 seconds without falling. First on flat ground, then sticks (drag your feet and you trip) and logs (step over them) appear. Starts from the agent\'s Stand brain.',
-  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a small wall shelf. Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Each step earns reward. Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
+  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. Sticks (drag your feet and you trip) and logs appear as training goes on. Starts from the agent\'s Stand brain.',
+  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a free-standing table (lean on it and it slides, bump it and it tips). Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
 };
 const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
 const NAMES = ['Nova', 'Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Echo', 'Tarn', 'Vale'];
 
 /* ================= agents & storage ================= */
-const LS_KEY = 'glassbox-embodied2d/v2';
+const LS_KEY = 'glassbox-embodied2d/v3';
 const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false, ghost: false };
 const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, history: b.history || [], created: b.created, updated: b.updated }; }
-function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], skills: {}, demos: {}, learnFrom: {}, tests: {} }; }
+function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], skills: {}, tests: {} }; }
 function agentFromStarter(name, data, i) {
   const a = blankAgent(name, i, 0);
   for (const k of SKILLS) if (data[k]) { const r = brainFromJSON(data[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) a.skills[k] = skillFromBrain(r.brain); }
   a.seed = (a.skills.stand && a.skills.stand.seed) || i + 1; a.starter = true;
-  if (data._learnFrom) for (const k of SKILLS) if (['none', 'ref'].includes(data._learnFrom[k])) a.learnFrom[k] = data._learnFrom[k];   // how it was trained
   return a;
 }
 function skillToBrainJSON(a, skill) {
@@ -327,9 +291,8 @@ function agentToJSON(a) {
   const skills = {};
   for (const k of SKILLS) if (a.skills[k]) skills[k] = skillToBrainJSON(a, k);
   return { format: 'glassbox-body-agent', formatVersion: 1, app: 'Glass Box', exportedAt: new Date().toISOString(), name: a.name, seed: a.seed, color: a.color,
-    bodyPlan: BIPED.id, starter: !!a.starter, skills, demos: a.demos, learnFrom: a.learnFrom, tests: a.tests };
+    bodyPlan: BIPED.id, starter: !!a.starter, skills, tests: a.tests };
 }
-function validClip(c) { return c && Array.isArray(c.keys) && c.keys.every(k => typeof k.t === 'number' && k.pose && typeof k.pose === 'object') && c.keys.length <= 200; }
 function agentFromJSON(j, i) {
   if (!j || j.format !== 'glassbox-body-agent' || j.formatVersion > 1) return null;
   const a = blankAgent(String(j.name || 'Agent').slice(0, 24), i, j.seed);
@@ -337,8 +300,6 @@ function agentFromJSON(j, i) {
   a.starter = !!j.starter;
   if (j.bodyPlan === BIPED.id) for (const k of SKILLS) if (j.skills && j.skills[k]) { const r = brainFromJSON(j.skills[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) a.skills[k] = skillFromBrain(r.brain); }
   for (const k of SKILLS) {
-    if (j.demos && validClip(j.demos[k])) a.demos[k] = j.demos[k];
-    if (j.learnFrom && ['none', 'ref', 'demo'].includes(j.learnFrom[k])) a.learnFrom[k] = j.learnFrom[k];
     if (j.tests && j.tests[k] && typeof j.tests[k].ok === 'number') a.tests[k] = j.tests[k];
   }
   return a;
@@ -346,7 +307,7 @@ function agentFromJSON(j, i) {
 function saveAll() {
   if (!App.dirty) return;
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify({ v: 2, agentIndex: App.agents.indexOf(agent()), skill: App.skill, ghost: App.ghost, agents: App.agents.map(agentToJSON) }));
+    localStorage.setItem(LS_KEY, JSON.stringify({ v: 3, agentIndex: App.agents.indexOf(agent()), skill: App.skill, ghost: App.ghost, agents: App.agents.map(agentToJSON) }));
     App.dirty = false; $('#saveStatus').textContent = 'saved';
   } catch (e) { $('#saveStatus').textContent = 'not saved (storage blocked)'; }
 }
@@ -381,13 +342,6 @@ function brainFor(a, skill) {
   if (skill !== 'stand' && a.skills.stand) return { params: transferBrain(a.skills.stand.params, 'stand', skill), from: 'stand' };
   return { params: Network.random(SIZES, makeRng(a.seed * 977 + skill.length)).params, from: null };
 }
-/** The clip an agent's training should imitate for a skill, or null. */
-function imitationFor(a, skill) {
-  const lf = a.learnFrom[skill] || 'none';
-  if (lf === 'ref') return REFERENCE[skill];
-  if (lf === 'demo' && a.demos[skill]) return a.demos[skill];
-  return null;
-}
 /** Curriculum settings for watching or testing a skill at its current level. */
 function levelOpts(a, skill) {
   const g = a.skills[skill] ? a.skills[skill].generation : 0, hard = hardness(g);
@@ -413,14 +367,14 @@ function stepWatch() {
   else for (const a of t.agents) a.world.step();   // let it settle
 }
 
-/* ================= testing: 10 runs → success rate ================= */
-const Test = {
+/* ================= success check: 10 runs → success rate ================= */
+const Check = {
   running: false, n: 10, k: 0, ok: 0, trial: null, agentId: null, skill: null,
   start() {
     if (this.running) return;
     const a = agent();
     Object.assign(this, { running: true, k: 0, ok: 0, agentId: a.id, skill: App.skill, brain: brainFor(a, App.skill).params, opts: levelOpts(a, App.skill) });
-    this.next(); $('#testBtn').disabled = true;
+    this.next(); $('#checkBtn').disabled = true;
   },
   next() {
     if (this.trial) this.trial.free();
@@ -440,7 +394,7 @@ const Test = {
     $('#stSuccess').textContent = `${this.ok}/${this.k}…`;
   },
   finish() {
-    this.trial.free(); this.trial = null; this.running = false; $('#testBtn').disabled = false;
+    this.trial.free(); this.trial = null; this.running = false; $('#checkBtn').disabled = false;
     const a = App.agents.find(x => x.id === this.agentId);
     if (a) { a.tests[this.skill] = { ok: this.ok, n: this.n, generation: a.skills[this.skill] ? a.skills[this.skill].generation : 0, level: this.opts.hard }; markDirty(); }
     renderStatus();
@@ -450,11 +404,11 @@ const Test = {
 
 /* ================= training (runs in the background, time-sliced) ================= */
 const Train = {
-  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12, imitate: null,
+  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12,
   start() {
     if (this.running) this.stop();
     const a = agent(), s = a.skills[App.skill], from = brainFor(a, App.skill);
-    this.skill = App.skill; this.agentId = a.id; this.imitate = imitationFor(a, App.skill);
+    this.skill = App.skill; this.agentId = a.id;
     this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (s ? s.seed : a.seed * 31 + App.skill.length) + (s ? s.generation : 0), sigma: s ? s.sigma : 0.15,
       parent: from.params, generation: s ? s.generation : 0, history: s ? s.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
     if (!s && from.from === 'stand') toast(`Starting ${TASKS[App.skill].name} from ${a.name}'s Stand brain`);
@@ -466,7 +420,7 @@ const Train = {
     if (this.trial) { this.trial.free(); this.trial = null; }
     renderTrainUI(); refreshAgents();
   },
-  newGeneration() { this.episodes = episodeConfigs(this.skill, this.evo.generation, this.imitate); this.ep = 0; this.perEpisode = []; this.newEpisode(); },
+  newGeneration() { this.episodes = episodeConfigs(this.skill, this.evo.generation); this.ep = 0; this.perEpisode = []; this.newEpisode(); },
   newEpisode() { if (this.trial) this.trial.free(); this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]); },
   tick() {
     if (!this.running) return;
@@ -502,24 +456,23 @@ function renderTrainUI() {
   if (Train.running) { const a = App.agents.find(x => x.id === Train.agentId); badge.textContent = `● TRAINING ${a ? a.name : ''} · ${TASKS[Train.skill].name} · gen ${Train.evo.generation}`; }
 }
 
-/* ================= teaching ================= */
-const Teach = {
-  trial: null, override: {}, harness: null, tilt: 0, drag: null, grip: null, holding: false,
-  clip: null, sel: -1, playing: false, playT: 0,
+/* ================= test mode: move the limbs, see how it reacts (never affects learning) ================= */
+const Probe = {
+  trial: null, override: {}, harness: null, tilt: 0, drag: null, grip: null, brainOn: true, frozen: false,
   start() {
     this.stopTrial();
     const a = agent();
-    this.override = {}; this.holding = false;
+    this.override = {};
     this.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], Object.assign(levelOpts(a, App.skill),
-      { seed: 4242, variant: 0, push: 0, noise: 0, terrain: [], override: this.override, keepSimulating: true }));
+      { seed: 4242, variant: 0, push: 0, noise: 0, terrain: [], foodX: 8, override: this.override, keepSimulating: true }));
     this.trial.maxSteps = Infinity;
-    this.trial.hard = 0;                       // no automatic shoves while you teach
+    this.trial.hard = 0;                       // no automatic shoves while you test
     this.world().numSolverIterations = 24;     // stiffer joint limits while you pull on limbs (one body, so it's cheap)
     this.trial.gripOverride = this.grip;
+    this.trial.brainOff = !this.brainOn;
     this.tilt = 0;
     this.setHarness($('#harnessOn').checked);
     View.camX = 0.2;
-    if (!this.clip || this.clip.skill !== App.skill) this.loadClip();
   },
   stopTrial() { if (this.trial) { this.trial.free(); this.trial = null; } this.harness = null; this.drag = null; },
   body() { return this.trial && this.trial.agents[0].body; },
@@ -535,7 +488,7 @@ const Teach = {
     this.harness = { anchor, joint };
     b.fallen = false;
   },
-  setTilt(v) { this.tilt = v; if (this.harness) this.setHarness(true); },
+  setTilt(v) { this.tilt = v; if (this.frozen) this.setPoseFrozen('torso', v); if (this.harness) this.setHarness(true); },
   /** Pointer pressed at world point p: grab the nearest body part. */
   grab(p) {
     const b = this.body();
@@ -551,23 +504,9 @@ const Teach = {
     }
     if (!best) return false;
     this.drag = { rb: best.rb, part: best.part, local: { x: best.lx, y: best.ly }, target: p };
-    // let go of the joints between this part and the torso while you move it
-    this.chain(best.part.id).forEach(id => delete this.override[id]);
     return true;
   },
-  /** Joints from a part up to the torso. */
-  chain(partId) {
-    const out = [];
-    let cur = partId;
-    while (cur !== 'torso') { const j = BIPED.joints.find(q => q.b === cur); if (!j) break; out.push(j.id); cur = j.a; }
-    return out;
-  },
-  release() {
-    if (!this.drag) return;
-    const b = this.body();
-    if (this.holding && b) for (const id of this.chain(this.drag.part.id)) { const j = b.joints.find(q => q.spec.id === id); this.override[id] = b.angle(j); }
-    this.drag = null;
-  },
+  release() { this.drag = null; },
   pullForce() {   // the mouse acts like a strong spring on the grabbed point (stronger than any motor)
     const d = this.drag;
     if (!d) return;
@@ -581,71 +520,40 @@ const Teach = {
     d.point = { x: px, y: py };
   },
   step() {
-    if (!this.trial) return;
-    if (this.playing) { this.playT += DT; return; }
+    if (!this.trial || this.frozen) return;
     this.pullForce();
     const ag = this.trial.agents[0];
-    ag.done = false; ag.body.fallen = false;   // teaching never ends, even if the body falls over
+    ag.done = false; ag.body.fallen = false;              // testing never ends, even if the body falls over
+    ag.body.energyLeft = ag.body.energyMax;               // and never runs out of energy (tiredness still shows)
     this.trial.step();
   },
-  hold() { const b = this.body(); if (!b) return; for (const j of b.joints) this.override[j.spec.id] = b.angle(j); this.holding = true; renderTeachUI(); },
-  letGo() { for (const k in this.override) delete this.override[k]; this.holding = false; renderTeachUI(); },
+  toggleBrain() { this.brainOn = !this.brainOn; if (this.trial) this.trial.brainOff = !this.brainOn; renderProbeUI(); },
+  toggleFreeze() { this.frozen = !this.frozen; this.drag = null; renderProbeUI(); },
   cycleHand() {
     this.grip = this.grip === null ? 1 : this.grip === 1 ? -1 : null;
     if (this.trial) this.trial.gripOverride = this.grip;
-    renderTeachUI();
+    renderProbeUI();
   },
-  /* ---- keyframes ---- */
-  loadClip() {
-    const a = agent(), saved = a.demos[App.skill];
-    this.clip = saved ? JSON.parse(JSON.stringify(saved)) : { name: `${a.name}'s ${TASKS[App.skill].name}`, skill: App.skill, loop: App.skill !== 'grab', period: App.skill !== 'grab' ? 1 : 3, keys: [] };
-    this.sel = -1; this.playing = false;
-    renderKeys();
+  /** While time is frozen: put a joint (or the torso tilt) where you say, directly, without physics. */
+  setPoseFrozen(id, value) {
+    const b = this.body();
+    if (!b) return;
+    const pose = b.pose(); pose[id] = value;
+    const t = b.torso.translation(), P = poseParts(pose, t.x, t.y);
+    for (const pid in P) {
+      const rb = b.parts[pid];
+      rb.setTranslation({ x: P[pid].x, y: P[pid].y }, true); rb.setRotation(P[pid].a, true);
+      rb.setLinvel({ x: 0, y: 0 }, true); rb.setAngvel(0, true);
+    }
   },
-  currentPose() {
-    const b = this.body(), p = b.pose();
-    p.torso = this.harness ? this.tilt : p.torso;
-    return p;
-  },
-  addKey(t) {
-    const c = this.clip, pose = this.currentPose(), grip = this.grip === 1 || (this.body().grip ? 1 : 0) ? 1 : 0;
-    const existing = c.keys.findIndex(k => Math.abs(k.t - t) < 1e-6);
-    const key = { t, pose, grip };
-    if (existing >= 0) c.keys[existing] = key; else c.keys.push(key);
-    c.keys.sort((x, y) => x.t - y.t);
-    this.sel = c.keys.indexOf(key);
-    this.fixPeriod(); renderKeys();
-  },
-  fixPeriod() { const c = this.clip; c.period = c.loop ? 1 : Math.max(0.5, c.keys.length ? c.keys[c.keys.length - 1].t : 1); },
-  goToKey(i) {
-    const k = this.clip.keys[i];
-    this.sel = i; this.playing = false;
-    for (const id of POSE_KEYS) if (id !== 'torso') this.override[id] = k.pose[id] !== undefined ? k.pose[id] : REST_POSE[id];
-    this.holding = true;
-    if (k.pose.torso !== undefined) this.setTilt(k.pose.torso);
-    $('#keyTime').value = k.t;
-    renderKeys(); renderTeachUI(); buildJoints();
-  },
-  nextTime() { const c = this.clip, last = c.keys.length ? c.keys[c.keys.length - 1].t : -0.25; return c.loop ? Math.min(0.95, +(last + 0.25).toFixed(2)) : +(last + 0.5).toFixed(2); },
 };
-function renderTeachUI() {
-  $('#holdBtn').classList.toggle('on', Teach.holding);
-  $('#handBtn').textContent = Teach.grip === null ? 'Hand: brain' : Teach.grip === 1 ? 'Hand: closed' : 'Hand: open';
-  $('#handBtn').classList.toggle('on', Teach.grip !== null);
-}
-function renderKeys() {
-  const c = Teach.clip;
-  if (!c) return;
-  $('#teachTitle').textContent = `Demonstration · ${agent().name} · ${TASKS[App.skill].name}${agent().demos[App.skill] ? ' (saved)' : ''}`;
-  $('#clipLoop').checked = !!c.loop;
-  $('#keys').innerHTML = c.keys.length ? c.keys.map((k, i) => `<button class="key" data-i="${i}" aria-pressed="${i === Teach.sel}">${c.loop ? (k.t * 100).toFixed(0) + '%' : k.t.toFixed(2) + ' s'}${k.grip ? '<i>✊</i>' : ''}</button>`).join('')
-    : '<span class="about">No keys yet.</span>';
-  $('#updKey').disabled = $('#delKey').disabled = Teach.sel < 0;
-  $('#playClip').textContent = Teach.playing ? 'Stop' : 'Play';
-  $('#playClip').disabled = c.keys.length < 1;
-  $('#saveClip').disabled = c.keys.length < 1;
-  $('#keyTime').step = c.loop ? 0.05 : 0.1; $('#keyTime').max = c.loop ? 0.95 : 20;
-  if (Teach.sel < 0) $('#keyTime').value = Teach.nextTime();
+function renderProbeUI() {
+  $('#brainBtn').textContent = Probe.brainOn ? 'Brain: on (reacts)' : 'Brain: off (limp)';
+  $('#brainBtn').classList.toggle('on', !Probe.brainOn);
+  $('#freezeBtn').textContent = Probe.frozen ? 'Unfreeze time' : 'Freeze time';
+  $('#freezeBtn').classList.toggle('on', Probe.frozen);
+  $('#handBtn').textContent = Probe.grip === null ? 'Hand: brain' : Probe.grip === 1 ? 'Hand: closed' : 'Hand: open';
+  $('#handBtn').classList.toggle('on', Probe.grip !== null);
 }
 
 /* ================= drawing the world ================= */
@@ -657,9 +565,9 @@ function fit(c) {
   if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
   return { ctx: c.getContext('2d'), w, h, d };
 }
-/** What the stage shows: the teach body, the best-scoring training attempt, or the watched body. */
+/** What the stage shows: the test-mode body, the best-scoring training attempt, or the watched body. */
 function shown() {
-  if (App.mode === 'teach') { const t = Teach.trial; return { t, a: t ? t.agents[0] : null, training: false }; }
+  if (App.mode === 'test') { const t = Probe.trial; return { t, a: t ? t.agents[0] : null, training: false }; }
   const training = App.mode === 'train' && Train.isShowing() && Train.trial;
   const t = training ? Train.trial : Watch.trial;
   if (!t || !t.agents.length) return { t, a: null, training };
@@ -675,7 +583,7 @@ function drawWorld() {
   if (!lead) return;
   const s = View.scale = h / 2.5, gy = h * 0.86, mono = css('--mono');
   const tx = lead.body.pos().x;
-  if (App.mode !== 'teach') View.camX += ((App.skill === 'walk' ? tx + 0.6 : 0.25) - View.camX) * 0.08;
+  if (App.mode !== 'test') View.camX += ((App.skill === 'walk' ? tx + 0.6 : 0.25) - View.camX) * 0.08;
   const X = x => w / 2 + (x - View.camX) * s, Y = y => gy - y * s;
   View.X = X; View.Y = Y; View.w = w; View.h = h; View.gy = gy;
 
@@ -696,20 +604,27 @@ function drawWorld() {
     if (o.kind === 'log') { ctx.strokeStyle = '#8a6a4f'; ctx.beginPath(); ctx.arc(X(o.x + o.w / 2) - r, Y(o.h / 2), Math.max(1, r * 0.5), 0, 7); ctx.stroke(); }
   }
 
+  // food (Walk)
+  if (lead.st && lead.st.foodX !== undefined && trial.taskId === 'walk') {
+    const fx = X(lead.st.foodX), fy = Y(0.07), r = 0.07 * s;
+    ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(fx, fy, r, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.moveTo(fx, fy - r); ctx.lineTo(fx + 0.02 * s, fy - r - 0.04 * s); ctx.stroke();
+    ctx.fillStyle = '#4caf50'; ctx.beginPath(); ctx.ellipse(fx + 0.04 * s, fy - r - 0.02 * s, 0.03 * s, 0.012 * s, -0.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#8a8f98'; ctx.font = `${10 * d}px ${mono}`; ctx.textAlign = 'center'; ctx.fillText('FOOD', fx, fy - r - 0.08 * s); ctx.textAlign = 'left';
+  }
   if (training) {
     for (const a of trial.agents) if (a !== lead) { drawObjects(ctx, a, d, 0.12); drawBody(ctx, a.body, d, 0.16, false); }
     drawObjects(ctx, lead, d, 1); drawBody(ctx, lead.body, d, 1, true);
   } else {
     drawObjects(ctx, lead, d, 1);
     // the ideal as a ghost, aligned with the body's torso
-    if (App.mode === 'teach' && Teach.playing && Teach.clip.keys.length) { const t = lead.body.torso.translation(); drawGhost(ctx, clipPose(Teach.clip, Teach.playT), t.x, t.y, d, 'YOUR DEMO'); }
-    else if (App.mode === 'watch' && App.ghost) { const t = lead.body.torso.translation(); drawGhost(ctx, clipPose(REFERENCE[App.skill], trial.time), t.x, t.y, d, 'IDEAL'); }
-    drawBody(ctx, lead.body, d, App.mode === 'teach' && Teach.playing ? 0.35 : 1, true);
+    if (App.mode === 'watch' && App.ghost) { const t = lead.body.torso.translation(); drawGhost(ctx, clipPose(REFERENCE[App.skill], trial.time), t.x, t.y, d, 'IDEAL'); }
+    drawBody(ctx, lead.body, d, 1, true);
   }
-  // teaching: harness and drag line
-  if (App.mode === 'teach') {
-    if (Teach.harness) { const p = Teach.harness.anchor.translation(); ctx.strokeStyle = 'rgba(232,230,225,.35)'; ctx.setLineDash([4 * d, 4 * d]); ctx.lineWidth = d; ctx.beginPath(); ctx.moveTo(X(p.x), 0); ctx.lineTo(X(p.x), Y(p.y)); ctx.stroke(); ctx.setLineDash([]); }
-    const dr = Teach.drag;
+  // test mode: harness and drag line
+  if (App.mode === 'test') {
+    if (Probe.harness) { const p = Probe.harness.anchor.translation(); ctx.strokeStyle = 'rgba(232,230,225,.35)'; ctx.setLineDash([4 * d, 4 * d]); ctx.lineWidth = d; ctx.beginPath(); ctx.moveTo(X(p.x), 0); ctx.lineTo(X(p.x), Y(p.y)); ctx.stroke(); ctx.setLineDash([]); }
+    const dr = Probe.drag;
     if (dr && dr.point) { ctx.strokeStyle = css('--signal'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.moveTo(X(dr.point.x), Y(dr.point.y)); ctx.lineTo(X(dr.target.x), Y(dr.target.y)); ctx.stroke(); ctx.fillStyle = css('--signal'); ctx.beginPath(); ctx.arc(X(dr.target.x), Y(dr.target.y), 4 * d, 0, 7); ctx.fill(); }
   }
   // shove arrow
@@ -722,22 +637,23 @@ function drawWorld() {
   ctx.font = `${11 * d}px ${mono}`; ctx.fillStyle = '#8a8f98';
   const a = agent();
   const cap = training ? `TRAINING · ${a.name} · ${TASKS[Train.skill].name} · generation ${Train.evo.generation + 1} · try ${Train.ep + 1}/${Train.episodes.length} · ${trial.time.toFixed(1)} s`
-    : App.mode === 'teach' ? `TEACHING · ${a.name} · ${TASKS[App.skill].name} · brain is on (it fights you) · nothing is learned`
+    : App.mode === 'test' ? `TEST · ${a.name} · ${TASKS[App.skill].name} · ${Probe.frozen ? 'TIME FROZEN' : Probe.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'} · nothing is learned`
     : `${a.name} · ${TASKS[App.skill].name} · ${trial.time.toFixed(1)} s`;
   ctx.fillText(cap.toUpperCase(), 14 * d, 22 * d);
-  if (training) { ctx.fillStyle = '#5a5f68'; ctx.fillText(`${trial.agents.length} VARIATIONS AT ONCE (FAINT) · BEST RIGHT NOW (SOLID)${Train.imitate ? ' · IMITATING ' + Train.imitate.name.toUpperCase() : ''}`, 14 * d, 38 * d); }
+  if (training) { ctx.fillStyle = '#5a5f68'; ctx.fillText(`${trial.agents.length} VARIATIONS AT ONCE (FAINT) · BEST RIGHT NOW (SOLID)`, 14 * d, 38 * d); }
 }
 
 function drawObjects(ctx, a, d, alpha) {
   const st = a.st, X = View.X, Y = View.Y, s = View.scale;
   if (!st || !st.table) return;
   ctx.globalAlpha = alpha;
-  const t = st.table.translation();
-  // a small wall shelf, hung from above by a rod at its far end
-  ctx.strokeStyle = '#4a4f58'; ctx.lineWidth = 1.5 * d;
-  ctx.beginPath(); ctx.moveTo(X(t.x + TABLE.hx - 0.006), Y(st.top)); ctx.lineTo(X(t.x + TABLE.hx - 0.006), 0); ctx.stroke();
+  const t = st.table.translation(), ta = st.table.rotation(), legH = (st.top - 2 * TABLE.hy) / 2;
+  // the free-standing table (it can slide and tip, so draw it as it is)
+  ctx.save(); ctx.translate(X(t.x), Y(t.y)); ctx.rotate(-ta);
   ctx.fillStyle = '#3a3029'; ctx.strokeStyle = '#5a4b3e'; ctx.lineWidth = d;
-  ctx.fillRect(X(t.x - TABLE.hx), Y(st.top), TABLE.hx * 2 * s, TABLE.hy * 2 * s); ctx.strokeRect(X(t.x - TABLE.hx), Y(st.top), TABLE.hx * 2 * s, TABLE.hy * 2 * s);
+  ctx.fillRect(-TABLE.hx * s, -TABLE.hy * s, TABLE.hx * 2 * s, TABLE.hy * 2 * s); ctx.strokeRect(-TABLE.hx * s, -TABLE.hy * s, TABLE.hx * 2 * s, TABLE.hy * 2 * s);
+  for (const side of [-1, 1]) ctx.fillRect((side * (TABLE.hx - TABLE.leg) - TABLE.leg) * s, TABLE.hy * s, TABLE.leg * 2 * s, legH * 2 * s);
+  ctx.restore();
   const g = st.glass, p = g.translation(), ang = g.rotation();
   ctx.save(); ctx.translate(X(p.x), Y(p.y)); ctx.rotate(-ang);
   const gw = GLASS.hx * s, gh = GLASS.hy * s;
@@ -800,9 +716,9 @@ function drawBody(ctx, body, d, alpha, detail) {
   drawParts(ctx, P, d, { far: '#4a5260', near: detail ? '#e8e6e1' : '#9aa0aa', torso: detail ? '#c9c6bf' : '#8a8f98', head: detail ? accent : '#8a8f98' });
   const X = View.X, Y = View.Y, s = View.scale;
   if (body.grip && detail) { const h = body.handPos(); ctx.strokeStyle = css('--hue'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.arc(X(h.x), Y(h.y), 0.07 * s, 0, 7); ctx.stroke(); }
-  if (detail) {   // motor effort arcs on the near-side joints; held joints (teaching) ringed in orange
+  if (detail) {   // motor effort arcs on the near-side joints; joints you're moving (test mode) ringed in orange
     for (const j of body.joints) {
-      const held = App.mode === 'teach' && Teach.override[j.spec.id] !== undefined;
+      const held = App.mode === 'test' && Probe.override[j.spec.id] !== undefined;
       if (j.spec.id.endsWith('L') && !held) continue;
       const pa = BIPED.parts.find(p => p.id === j.spec.a), rb = j.a, t = rb.translation(), a = rb.rotation();
       const lx = j.spec.x - pa.x, ly = j.spec.y - pa.y, wx = t.x + lx * Math.cos(a) - ly * Math.sin(a), wy = t.y + lx * Math.sin(a) + ly * Math.cos(a);
@@ -853,28 +769,35 @@ function drawBrain() {
 }
 
 function buildJoints() {
-  const teach = App.mode === 'teach';
-  $('#jointsTitle').textContent = teach ? 'Joints · drag a slider to set and hold that joint (orange = held by you)' : 'Joints · angle (white), motor target (orange), effort';
-  const rows = BIPED.joints.map(j => teach
-    ? `<span class="n" id="jn-${j.id}">${j.id}</span><input type="range" id="js-${j.id}" min="${j.lo}" max="${j.hi}" step="0.01" value="${Teach.override[j.id] !== undefined ? Teach.override[j.id] : j.rest}"><span class="v" id="jv-${j.id}"></span>`
-    : `<span class="n">${j.id}</span><span class="jbar" id="jb-${j.id}"><s></s><i></i><u></u></span><span class="v" id="jv-${j.id}"></span>`);
-  if (teach) rows.unshift(`<span class="n">torso tilt</span><input type="range" id="js-torso" min="-1.0" max="0.6" step="0.01" value="${Teach.tilt}" title="Needs the harness"><span class="v" id="jv-torso"></span>`);
+  const test = App.mode === 'test';
+  $('#jointsTitle').textContent = test ? 'Joints · drag a slider to move that joint; let go and the brain takes over again · tired %' : 'Joints · angle (white), motor target (orange), effort · tired %';
+  const rows = BIPED.joints.map(j => test
+    ? `<span class="n" id="jn-${j.id}">${j.id}</span><input type="range" id="js-${j.id}" min="${j.lo}" max="${j.hi}" step="0.01" value="${j.rest}"><span class="f" id="jf-${j.id}"></span><span class="v" id="jv-${j.id}"></span>`
+    : `<span class="n">${j.id}</span><span class="jbar" id="jb-${j.id}"><s></s><i></i><u></u></span><span class="f" id="jf-${j.id}"></span><span class="v" id="jv-${j.id}"></span>`);
+  if (test) rows.unshift(`<span class="n">torso tilt</span><input type="range" id="js-torso" min="-1.0" max="0.6" step="0.01" value="${Probe.tilt}" title="Needs the harness"><span class="f"></span><span class="v" id="jv-torso"></span>`);
   $('#joints').innerHTML = rows.join('');
-  if (teach) {
-    for (const j of BIPED.joints) $('#js-' + j.id).addEventListener('input', e => { Teach.override[j.id] = +e.target.value; });
-    $('#js-torso').addEventListener('input', e => { if (!$('#harnessOn').checked) { $('#harnessOn').checked = true; } Teach.setTilt(+e.target.value); });
+  if (test) {
+    for (const j of BIPED.joints) {
+      const sl = $('#js-' + j.id);
+      // while you hold the slider the joint goes where you put it; let go and the brain reacts again
+      sl.addEventListener('input', e => { if (Probe.frozen) Probe.setPoseFrozen(j.id, +e.target.value); else Probe.override[j.id] = +e.target.value; });
+      sl.addEventListener('change', () => { delete Probe.override[j.id]; sl.blur(); });
+    }
+    $('#js-torso').addEventListener('input', e => { if (!$('#harnessOn').checked) { $('#harnessOn').checked = true; } Probe.setTilt(+e.target.value); });
   }
 }
+function tiredText(j) { const f = Math.round(j.fatigue * 100); return { t: f ? `${f}%` : '', c: f > 60 ? 'var(--bad)' : f > 30 ? 'var(--signal)' : 'var(--faint)' }; }
 function updateJoints() {
   const { a: lead } = shown();
   if (!lead) return;
   const body = lead.body;
-  if (App.mode === 'teach') {
+  for (const j of body.joints) { const el = document.getElementById('jf-' + j.spec.id); if (el) { const t = tiredText(j); el.textContent = t.t; el.style.color = t.c; } }
+  if (App.mode === 'test') {
     for (const j of body.joints) {
-      const id = j.spec.id, held = Teach.override[id] !== undefined, sl = document.getElementById('js-' + id);
+      const id = j.spec.id, held = Probe.override[id] !== undefined, sl = document.getElementById('js-' + id);
       if (!sl) continue;
       document.getElementById('jn-' + id).classList.toggle('held', held);
-      if (document.activeElement !== sl) sl.value = held ? Teach.override[id] : body.angle(j);
+      if (document.activeElement !== sl) sl.value = body.angle(j);
       document.getElementById('jv-' + id).textContent = `${Math.round(body.angle(j) * 57.3)}°`;
     }
     const tv = document.getElementById('jv-torso'); if (tv) tv.textContent = `${Math.round(wrap(body.torso.rotation()) * 57.3)}°`;
@@ -919,25 +842,22 @@ function renderStatus() {
   if (App.skill === 'grab') parts.push(`assist ${Math.round(gripAssist(gen) * 100)}%`);
   $('#stHard').textContent = parts.join(' · ');
   const tst = a.tests[App.skill];
-  if (!Test.running) {
+  if (!Check.running) {
     $('#stSuccess').textContent = tst ? `${tst.ok}/${tst.n}` : '—';
     $('#stSuccessNote').textContent = tst ? `${TASKS[App.skill].successText} (gen ${tst.generation})` : 'press Test 10 runs';
   }
   let note = SKILL_NOTES[App.skill];
   if (!s) note += App.skill !== 'stand' && a.skills.stand ? ' <br><span class="warn">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="warn">Not trained yet: this brain is random, so the body just collapses. Train it!</span>';
-  if (imitationFor(a, App.skill)) note += ` <br><span class="warn" style="color:var(--ghost)">Training will also reward moving like: ${esc(imitationFor(a, App.skill).name)}.</span>`;
   $('#skillNote').innerHTML = note;
-  const lf = a.learnFrom[App.skill] || 'none';
-  $('#learnFrom').value = lf;
-  $('#learnFrom').querySelector('option[value=demo]').disabled = !a.demos[App.skill];
-  $('#learnFrom').querySelector('option[value=demo]').textContent = a.demos[App.skill] ? `My demonstration (${a.demos[App.skill].keys.length} keys)` : 'My demonstration (record one in Teach)';
 }
 function renderOutcome() {
   const { t, a, training } = shown();
   if (!a) return;
   $('#stOutLabel').textContent = training ? 'Best right now' : 'Right now';
-  $('#stOut').textContent = App.mode === 'teach' ? (a.body.grip ? 'holding the glass' : 'being taught') : t.task.describe(a.st, a.body);
-  $('#stEnergy').textContent = `${Math.round(a.body.work)} J · ${Math.round(a.body.power)} W`;
+  $('#stOut').textContent = App.mode === 'test' ? (a.body.grip ? 'holding the glass' : Probe.frozen ? 'time frozen' : Probe.brainOn ? 'reacting to you' : 'limp') : t.task.describe(a.st, a.body);
+  const b = a.body;
+  $('#stEnergy').textContent = App.mode === 'test' ? `${Math.round(b.power)} W` : `${Math.round(100 * b.energyLeft / b.energyMax)}% · ${Math.round(b.power)} W`;
+  $('#stTired').textContent = `tired: legs ${Math.round(b.tiredness('legs') * 100)}% · arms ${Math.round(b.tiredness('arms') * 100)}%`;
 }
 
 /* ================= UI wiring ================= */
@@ -954,15 +874,15 @@ function select(changes) {
   refreshAgents(); renderStatus(); renderTrainUI();
   $('#modeTabs').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === App.mode));
   $('#watchCtl').hidden = App.mode !== 'watch'; $('#trainCtl').hidden = App.mode !== 'train';
-  $('#teachCtl').hidden = App.mode !== 'teach'; $('#teachPanel').hidden = App.mode !== 'teach';
-  $('#stage').classList.toggle('teach', App.mode === 'teach');
+  $('#testCtl').hidden = App.mode !== 'test';
+  $('#stage').classList.toggle('test', App.mode === 'test');
   $('#stageHint').textContent = App.mode === 'watch' ? 'Click near the body to shove it'
-    : App.mode === 'teach' ? 'Drag any part of the body · the brain keeps fighting you · nothing here changes its brain' : Train.running && !Train.isShowing() ? 'Training another skill or agent in the background' : '';
-  if (App.mode === 'teach') { if (prevMode !== 'teach' || changes.agentId || changes.skill) Teach.start(); }
-  else Teach.stopTrial();
-  if (App.mode !== 'teach' && (prevMode !== App.mode || changes.agentId || changes.skill || !Watch.trial)) startWatch();
+    : App.mode === 'test' ? 'Drag any part of the body and see how it reacts · nothing here changes its brain' : Train.running && !Train.isShowing() ? 'Training another skill or agent in the background' : '';
+  if (App.mode === 'test') { if (prevMode !== 'test' || changes.agentId || changes.skill) Probe.start(); }
+  else Probe.stopTrial();
+  if (App.mode !== 'test' && (prevMode !== App.mode || changes.agentId || changes.skill || !Watch.trial)) startWatch();
   if (prevMode !== App.mode || changes.mode) buildJoints();
-  renderTeachUI(); renderKeys();
+  renderProbeUI();
   markDirty();
 }
 
@@ -975,38 +895,24 @@ function wire() {
   $('#skillTabs').onclick = e => { const b = e.target.closest('button'); if (b) select({ skill: b.dataset.skill }); };
   $('#modeTabs').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== App.mode) select({ mode: b.dataset.mode }); };
   $('#restart').onclick = startWatch;
-  $('#testBtn').onclick = () => Test.start();
+  $('#checkBtn').onclick = () => Check.start();
   $('#ghostOn').onchange = e => { App.ghost = e.target.checked; markDirty(); };
   $('#speed').onchange = e => { Train.budget = +e.target.value; };
-  $('#learnFrom').onchange = e => { agent().learnFrom[App.skill] = e.target.value; markDirty(); renderStatus(); if (Train.isShowing()) toast('Applies the next time you start training.'); };
   $('#trainBtn').onclick = () => { if (Train.isShowing()) Train.stop(); else Train.start(); };
   $('#trainBadge').onclick = () => Train.stop();
-  // teach controls
-  $('#harnessOn').onchange = e => Teach.setHarness(e.target.checked);
-  $('#holdBtn').onclick = () => Teach.hold();
-  $('#letGoBtn').onclick = () => Teach.letGo();
-  $('#handBtn').onclick = () => Teach.cycleHand();
-  $('#standUp').onclick = () => { Teach.start(); };
-  $('#clipLoop').onchange = e => { Teach.clip.loop = e.target.checked; if (Teach.clip.loop) Teach.clip.keys = Teach.clip.keys.filter(k => k.t < 1); Teach.fixPeriod(); renderKeys(); };
-  $('#loadRef').onclick = () => { Teach.clip = JSON.parse(JSON.stringify(REFERENCE[App.skill])); Teach.clip.name = `${agent().name}'s ${TASKS[App.skill].name}`; Teach.sel = -1; renderKeys(); toast('Loaded the reference. Edit its keys, then save it as your own.'); };
-  $('#clearClip').onclick = () => { Teach.clip.keys = []; Teach.sel = -1; Teach.playing = false; renderKeys(); };
-  $('#keys').onclick = e => { const b = e.target.closest('.key'); if (b) Teach.goToKey(+b.dataset.i); };
-  $('#addKey').onclick = () => { const t = Math.max(0, +$('#keyTime').value || 0); if (Teach.clip.loop && t >= 1) return toast('Looping clips go from 0 to 0.95 (one 1 s cycle).'); Teach.addKey(+t.toFixed(2)); };
-  $('#updKey').onclick = () => { if (Teach.sel >= 0) { Teach.clip.keys.splice(Teach.sel, 1); Teach.addKey(+(+$('#keyTime').value).toFixed(2)); } };
-  $('#delKey').onclick = () => { if (Teach.sel >= 0) { Teach.clip.keys.splice(Teach.sel, 1); Teach.sel = -1; Teach.fixPeriod(); renderKeys(); } };
-  $('#playClip').onclick = () => { Teach.playing = !Teach.playing; Teach.playT = 0; renderKeys(); };
-  $('#saveClip').onclick = () => {
-    const c = JSON.parse(JSON.stringify(Teach.clip)); c.id = 'demo-' + App.skill; Teach.fixPeriod(); c.period = Teach.clip.period;
-    agent().demos[App.skill] = c; markDirty(); renderKeys(); renderStatus();
-    toast('Saved. To use it, go to Train and pick "Learn from: My demonstration".', 4000);
-  };
+  // test controls
+  $('#brainBtn').onclick = () => Probe.toggleBrain();
+  $('#freezeBtn').onclick = () => Probe.toggleFreeze();
+  $('#harnessOn').onchange = e => Probe.setHarness(e.target.checked);
+  $('#handBtn').onclick = () => Probe.cycleHand();
+  $('#standUp').onclick = () => { Probe.start(); };
   // agents
   $('#newAgent').onclick = () => { $('#newName').value = NAMES.find(n => !App.agents.some(a => a.name === n)) || 'Agent'; $('#newDlg').showModal(); $('#newName').select(); };
   $('#newDlg').addEventListener('close', () => {
     if ($('#newDlg').returnValue !== 'ok') return;
     const a = blankAgent($('#newName').value.trim().slice(0, 24) || 'Agent', App.agents.length);
     App.agents.unshift(a); select({ agentId: a.id, skill: 'stand', mode: 'watch' });
-    toast(`${a.name} knows nothing yet. Switch to Train to teach it to stand.`, 4000);
+    toast(`${a.name} knows nothing yet. Switch to Train so it can learn to stand.`, 4000);
   });
   $('#exportBtn').onclick = () => {
     const a = agent(), blob = new Blob([JSON.stringify(agentToJSON(a), null, 1)], { type: 'application/json' });
@@ -1029,16 +935,16 @@ function wire() {
     const a = agentFromJSON(j, App.agents.length);
     if (!a) return toast('Not a Glass Box Embodied 2D agent file.');
     App.agents.push(a); select({ agentId: a.id });
-    toast(j.bodyPlan === BIPED.id ? `Imported ${a.name}.` : `Imported ${a.name}'s demonstrations; its brains were for an older body and were left out.`, 4000);
+    toast(j.bodyPlan === BIPED.id ? `Imported ${a.name}.` : `Imported ${a.name}, but its brains were for an older body and were left out.`, 4000);
   };
-  // stage: shove (watch) or drag limbs (teach)
+  // stage: shove (watch) or drag limbs (test)
   const view = $('#view');
   view.addEventListener('pointerdown', e => {
     if (!View.X) return;
     const p = worldPoint(e);
-    if (App.mode === 'teach') {
-      if (Teach.playing) { Teach.playing = false; renderKeys(); }
-      if (Teach.grab(p)) { view.setPointerCapture(e.pointerId); $('#stage').classList.add('dragging'); }
+    if (App.mode === 'test') {
+      if (Probe.frozen) return toast('Time is frozen: use the sliders to move joints, or unfreeze to drag.');
+      if (Probe.grab(p)) { view.setPointerCapture(e.pointerId); $('#stage').classList.add('dragging'); }
       return;
     }
     if (App.mode !== 'watch' || !Watch.trial) return;
@@ -1046,8 +952,8 @@ function wire() {
     body.torso.applyImpulse({ x: dir * 45, y: 0 }, true);
     View.shove = { x: View.X(t.x) - dir * 0.15 * View.scale, y: p.py, dir, t: performance.now() };
   });
-  view.addEventListener('pointermove', e => { if (App.mode === 'teach' && Teach.drag) { const p = worldPoint(e); Teach.drag.target = { x: p.x, y: p.y }; } });
-  const up = () => { if (Teach.drag) { Teach.release(); $('#stage').classList.remove('dragging'); } };
+  view.addEventListener('pointermove', e => { if (App.mode === 'test' && Probe.drag) { const p = worldPoint(e); Probe.drag.target = { x: p.x, y: p.y }; } });
+  const up = () => { if (Probe.drag) { Probe.release(); $('#stage').classList.remove('dragging'); } };
   view.addEventListener('pointerup', up); view.addEventListener('pointercancel', up);
 }
 
@@ -1057,10 +963,10 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
   Train.tick();
-  Test.tick();
+  Check.tick();
   if (!(App.mode === 'train' && Train.isShowing())) {
     acc += dt; let n = 0;
-    while (acc >= DT && n++ < 4) { if (App.mode === 'teach') Teach.step(); else stepWatch(); acc -= DT; }
+    while (acc >= DT && n++ < 4) { if (App.mode === 'test') Probe.step(); else stepWatch(); acc -= DT; }
   }
   drawWorld(); drawBrain(); updateJoints(); renderOutcome();
   if (now - (frame.slow || 0) > 500) { frame.slow = now; drawChart(); if (Train.running) { renderTrainUI(); if (Train.isShowing()) refreshTabsLight(); } }
