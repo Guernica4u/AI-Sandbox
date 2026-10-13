@@ -21,6 +21,16 @@ skill (2–3 times, with different shoves and sensor noise), the best ones are
 kept and varied again. A curriculum starts gentle (no shoves, glass close by)
 and reaches full difficulty at generation 150.
 
+## Where it stands
+
+- **Stand:** all three starters stay up through repeated shoves (each in its own stance).
+- **Walk:** all three walk 6–9 m in 10 s, upright. The gaits are lopsided
+  (one leg leads, one trails), which is common for early neuroevolution.
+- **Pick up the glass:** the hard one. Juno lifts the glass in about 1 run in
+  3; Kit and Pax reach within ~10–15 cm but haven't learned to close the
+  hand. More generations alone didn't fix it (local optimum). Next ideas: a
+  reward for touching before closing, a wrist joint, or novelty search.
+
 ## Files
 
 | File | What it is | Reused in 3D? |
@@ -29,7 +39,7 @@ and reaches full difficulty at generation 150.
 | `body2d.js` | Body plan table, Rapier 2D world, senses/motors, task scoring | **Mostly.** Rapier 3D has the same API; shapes and joint axes change. The task scoring, curriculum and anti-exploit rules carry over. |
 | `index.html` | Viewing, training UI, saving | Partly (training loop, panels); the renderer is replaced by three.js. |
 | `starters.js` | Pretrained Kit, Juno and Pax (`window.EMBODIED_STARTERS`) | No: brains only fit the body they trained on. |
-| `vendor/rapier2d.js` | Rapier 2D 0.21.0 (Apache-2.0), bundled as a plain script so it works from `file://` | Swapped for Rapier 3D. |
+| `vendor/rapier2d.js` | Rapier 2D 0.21.0 (Apache-2.0, see `vendor/LICENSE-rapier2d.txt`), bundled as a plain script so it works from `file://` | Swapped for Rapier 3D. |
 
 ## Things the agents taught us (now handled in the code)
 
