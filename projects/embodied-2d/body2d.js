@@ -33,6 +33,9 @@ let ACT_LINEAR = false;
 // commands may reach past the straight-knee stop (pushing into it costs effort), so "straight" isn't the end of the range
 let KNEE_OVER = 0;
 const cmdRange = s => [s.lo, s.hi + (KNEE_OVER && s.id.startsWith('knee') ? KNEE_OVER : 0)];
+// two-joint calf muscle (gastrocnemius): pushing off with the toes also pulls the knee into a bend, as in a real leg.
+// The fraction of the ankle's toes-down torque that also flexes the knee. 0 = off.
+let GASTRO = 0;
 let SCUFF_J_PER_M = 0;   // tested at 800: sliding fell only ~15% and it broke already-trained scooting agents, so off
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
 const groups = (member, filter) => (member << 16) | filter;
@@ -211,6 +214,10 @@ class Biped {
       const s = j.spec, rel = j.b.angvel() - j.a.angvel();
       const torque = Math.max(-s.max, Math.min(s.max, s.k * (j.target - this.angle(j)) - s.d * rel));
       const effort = Math.abs(torque) / s.max;
+      if (GASTRO && torque < 0 && s.id.startsWith('ankle')) {   // toes-down torque on the foot: the knee above gets bent too
+        const knee = this.joints[this.joints.indexOf(j) - 1], tq = GASTRO * Math.max(torque, -s.max * (j.strength || 1)) * DT;
+        knee.b.applyTorqueImpulse(tq, true); knee.a.applyTorqueImpulse(-tq, true);
+      }
       w += HOLD_W_PER_NM * Math.abs(torque) + WORK_EFF * Math.abs(torque * rel);
       // effort cubed: walking-level effort (~0.5) barely tires (settles ~20%), hard sustained effort (tiptoe, ~0.9) wears out fast
       j.fatigue = Math.max(0, Math.min(1, j.fatigue + DT * (TIRE * effort * effort * effort - RECOVER * j.fatigue)));
@@ -660,7 +667,7 @@ function evaluate(R, taskId, population, generation, extra) {
 
 const api = { DT, BIPED, SENSES, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
   makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; }, setKneeOver: v => { KNEE_OVER = v; } };
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; }, setKneeOver: v => { KNEE_OVER = v; }, setGastro: v => { GASTRO = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 }
