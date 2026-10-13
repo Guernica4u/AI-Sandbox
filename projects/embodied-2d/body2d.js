@@ -30,6 +30,9 @@ const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 
 // The old mapping put 0 at the relaxed pose, which for the knee is nearly straight, so the entire positive half of the
 // command range meant "straight": brains saturated there (knee command pinned at +1 99% of the time) and never bent.
 let ACT_LINEAR = false;
+// commands may reach past the straight-knee stop (pushing into it costs effort), so "straight" isn't the end of the range
+let KNEE_OVER = 0;
+const cmdRange = s => [s.lo, s.hi + (KNEE_OVER && s.id.startsWith('knee') ? KNEE_OVER : 0)];
 let SCUFF_J_PER_M = 0;   // tested at 800: sliding fell only ~15% and it broke already-trained scooting agents, so off
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
 const groups = (member, filter) => (member << 16) | filter;
@@ -181,7 +184,8 @@ class Biped {
   act(actions, override) {
     for (let k = 0; k < this.joints.length; k++) {
       const j = this.joints[k], s = j.spec, u = Math.max(-1, Math.min(1, actions[k]));
-      let target = ACT_LINEAR ? (s.lo + s.hi) / 2 + u * (s.hi - s.lo) / 2
+      const [lo, hi] = cmdRange(s);
+      let target = ACT_LINEAR ? (lo + hi) / 2 + u * (hi - lo) / 2
         : u >= 0 ? s.rest + u * (s.hi - s.rest) : s.rest + u * (s.rest - s.lo);
       if (override && override[s.id] !== undefined) target = override[s.id];   // testing: a joint you're moving
       j.target = target;
@@ -595,7 +599,7 @@ class Trial {
 function freshBrain(rng) {
   const net = Brain.Network.random(SIZES, rng), hid = SIZES[1], start = SIZES[1] * (SIZES[0] + 1);
   if (ACT_LINEAR) BIPED.joints.forEach((j, o) => {
-    const u = Math.max(-0.9, Math.min(0.9, (j.rest - (j.lo + j.hi) / 2) / ((j.hi - j.lo) / 2)));
+    const [lo, hi] = cmdRange(j), u = Math.max(-0.9, Math.min(0.9, (j.rest - (lo + hi) / 2) / ((hi - lo) / 2)));
     net.params[start + o * (hid + 1) + hid] = Math.atanh(u);   // output bias
   });
   return net.params;
@@ -656,7 +660,7 @@ function evaluate(R, taskId, population, generation, extra) {
 
 const api = { DT, BIPED, SENSES, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
   makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; } };
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; }, setKneeOver: v => { KNEE_OVER = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 }
