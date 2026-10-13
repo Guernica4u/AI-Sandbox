@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!--
 ================================================================================
- AI SANDBOX HUB  -  works from file:// (fonts fall back to system fonts offline)
+ GLASS BOX HUB  -  works from file:// (fonts fall back to system fonts offline)
 ================================================================================
  Landing page: pick an environment and it opens on its own.
 
@@ -17,7 +17,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Sandbox</title>
+<title>Glass Box</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -121,7 +121,7 @@ footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line);
   <header class="bar">
     <div class="mark">
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="5" r="2"/><circle cx="4" cy="15" r="2"/><circle cx="16" cy="10" r="2.4" fill="#ff6a3d" stroke="#ff6a3d"/><path d="M6 5.6 13.7 9.3M6 14.4l7.7-3.7"/></svg>
-      AI&nbsp;SANDBOX
+      GLASS&nbsp;BOX
     </div>
     <div class="status label">
       <span><span class="dot"></span><span id="countReady"></span> environments online</span>
@@ -181,10 +181,14 @@ const ENVS = [
     desc: 'An open fight among the trees, with sticks, stones and spears lying around for anyone who thinks to pick them up.',
     agents: 'Ash · Fern · Rowan', learns: 'Q-learning', goal: 'Last one standing',
     href: GB + '?env=forest&setting=wild', cta: 'Enter the forest' },
-  { id: 'civ', name: 'Embodied Civilization', hue: '#ff6a3d', tags: ['Civilization', 'Survival', 'Building'], canvas: 'walker',
-    desc: 'Agents with physical bodies who control every joint, learn to walk and grab by themselves, then run a civilization.',
+  { id: 'e2d', name: 'Embodied 2D', hue: '#4fd1c5', tags: ['Bodies', 'Physics'], preview: 'assets/previews/embodied-2d.webp',
+    desc: 'Physical bodies with ten motorised joints. Nobody shows them how: each agent learns to stand, walk and pick up a glass of water by itself.',
+    agents: 'Kit · Juno · Pax', learns: 'Neuroevolution', goal: 'Stand, walk, pick up the glass',
+    href: 'projects/embodied-2d/index.html', cta: 'Enter the lab' },
+  { id: 'e3d', name: 'Embodied 3D', hue: '#ff6a3d', tags: ['Bodies', 'Physics', 'Civilization'], canvas: 'walker',
+    desc: 'The goal: the same learning bodies in 3D, running a civilization together. Built on what Embodied 2D proves out.',
     agents: 'TBD', learns: 'Neuroevolution (motor control)', goal: 'Build a civilization',
-    href: 'projects/embodied-civ/index.html', cta: 'In development', status: 'dev' },
+    href: 'projects/embodied-3d/index.html', cta: 'Planned', status: 'dev' },
 ];
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -289,7 +293,7 @@ function loop(fn) {   // runs fn(t) every frame (once if reduced motion), skips 
   function softmax(z) { const m = Math.max(...z), e = z.map(v => Math.exp((v - m) * 1.4)), s = e.reduce((p, q) => p + q, 0); return e.map(v => v / s); }
 })();
 
-/* ---------- embodied civ preview: a schematic jointed walker (2-link IK legs) ---------- */
+/* ---------- embodied 3D preview: a schematic jointed walker (2-link IK legs) ---------- */
 function startWalker(c) {
   const mono = getComputedStyle(document.body).getPropertyValue('--mono');
   const knee = (hip, foot, l1, l2) => {          // 2-link inverse kinematics, knee bends forward

@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+ GLASS BOX · EMBODIED 2D  -  works from file:// and on GitHub Pages
+================================================================================
+ Agents with physical bodies (10 motorised joints + a hand) learn to stand,
+ walk and pick up a glass of water by neuroevolution. Nothing is scripted:
+ every movement you see is a small neural network driving the motors.
+
+ Files:
+   vendor/rapier2d.js  Rapier 2D physics (Apache-2.0), bundled as a plain script
+   brain.js            networks + evolution + brain file format (engine-agnostic, reused for 3D)
+   body2d.js           the body, the world and the tasks
+   starters.js         pretrained starter agents (Kit, Juno, Pax)
+   index.html          this page: viewing, training, saving
+
+ AGENT FILE FORMAT  (format "glassbox-body-agent", formatVersion 1)
+ { "format": "glassbox-body-agent", "formatVersion": 1, "app": "Glass Box",
+   "name": "Kit", "seed": 1, "bodyPlan": "biped2d-v1",
+   "skills": { "stand": <glassbox-body-brain>, "walk": ..., "grab": ... } }
+ A single "glassbox-body-brain" file (see brain.js) can also be imported.
+================================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embodied 2D · Glass Box</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0b0d; --surface: #111317; --surface2: #16191e; --line: #23272e; --line2: #2f343c;
+  --text: #e8e6e1; --muted: #8a8f98; --faint: #5a5f68;
+  --signal: #ff6a3d; --hue: #4fd1c5; --water: #4aa3ff; --bad: #ef6a5b;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
+button, select, input { font: inherit; color: inherit; }
+.label { font: 500 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.mono { font-family: var(--mono); }
+
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.back { color: var(--muted); text-decoration: none; font: 500 12px var(--mono); letter-spacing: .06em; border: 1px solid var(--line2); padding: 5px 10px; }
+.back:hover { color: var(--text); border-color: var(--hue); }
+.title { font: 600 14px var(--mono); letter-spacing: .08em; }
+.title i { font-style: normal; color: var(--hue); }
+header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#saveStatus { color: var(--faint); font: 11px var(--mono); }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; padding: 16px; max-width: 1500px; margin: 0 auto; }
+@media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+.panel { background: var(--surface); border: 1px solid var(--line); }
+.panel > .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.panel > .body { padding: 12px; }
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+/* stage */
+.stage { position: relative; aspect-ratio: 16 / 8; background: #0d0f12; border-bottom: 1px solid var(--line); }
+@media (max-width: 640px) { .stage { aspect-ratio: 4 / 3; } .seg button { padding: 7px 9px; } }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+.stage .hint { position: absolute; right: 12px; bottom: 10px; font: 11px var(--mono); color: var(--faint); pointer-events: none; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line2); }
+.seg button { background: none; border: 0; border-right: 1px solid var(--line2); padding: 7px 12px; cursor: pointer; color: var(--muted); font: 500 12px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.seg button:last-child { border-right: 0; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--hue) 14%, transparent); color: var(--hue); }
+.btn { background: var(--surface2); border: 1px solid var(--line2); padding: 7px 12px; cursor: pointer; font: 500 12px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.btn:hover:not(:disabled) { border-color: var(--hue); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.go { color: var(--hue); border-color: color-mix(in srgb, var(--hue) 60%, transparent); background: color-mix(in srgb, var(--hue) 9%, transparent); }
+.btn.go.on { background: var(--hue); color: #0a0b0d; }
+.btn.small { padding: 4px 8px; font-size: 11px; }
+select { background: var(--surface2); border: 1px solid var(--line2); padding: 6px 8px; font: 13px var(--mono); }
+.grow { flex: 1; }
+
+.status { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+.status > div { background: var(--surface); padding: 10px 12px; }
+.status b { display: block; font: 600 16px var(--mono); margin-top: 4px; color: var(--text); }
+.status b.hue { color: var(--hue); }
+
+.skillnote { padding: 12px; border-top: 1px solid var(--line); color: var(--muted); }
+.skillnote strong { color: var(--text); font-weight: 600; }
+
+/* side panels */
+canvas.fill { display: block; width: 100%; }
+#brainCanvas { height: 300px; }
+#chart { height: 150px; }
+.joints { display: grid; grid-template-columns: 74px 1fr 46px; gap: 5px 8px; align-items: center; font: 11px var(--mono); }
+.joints .n { color: var(--muted); }
+.joints .v { color: var(--faint); text-align: right; }
+.jbar { position: relative; height: 10px; background: var(--surface2); border: 1px solid var(--line); }
+.jbar i { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--text); }
+.jbar u { position: absolute; top: 2px; bottom: 2px; width: 2px; background: var(--signal); text-decoration: none; }
+.jbar s { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--signal) 30%, transparent); text-decoration: none; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font: 11px var(--mono); color: var(--faint); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 2px; margin-right: 6px; vertical-align: middle; background: currentColor; }
+.legend .best { color: var(--hue); } .legend .mean { color: var(--faint); }
+
+.about { color: var(--muted); font-size: 13px; }
+.about p { margin: 0 0 8px; }
+.about b { color: var(--text); font-weight: 600; }
+
+dialog { background: var(--surface); color: var(--text); border: 1px solid var(--line2); padding: 0; max-width: min(460px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog .head { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+dialog .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+dialog input[type=text] { background: var(--bg); border: 1px solid var(--line2); padding: 7px 9px; font: 14px var(--mono); }
+dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--surface2); border: 1px solid var(--line2); padding: 8px 14px; font: 12px var(--mono); opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100vw - 32px); }
+#toast.show { opacity: 1; }
+.loading { position: absolute; inset: 0; display: grid; place-items: center; font: 12px var(--mono); color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="../../index.html">← Hub</a>
+  <div class="title">GLASS BOX / <i>EMBODIED 2D</i></div>
+  <div class="right">
+    <span class="label">Agent</span>
+    <select id="agentPick" aria-label="Agent"></select>
+    <button class="btn small" id="newAgent">+ New agent</button>
+    <button class="btn small" id="exportBtn">Export</button>
+    <button class="btn small" id="importBtn">Import</button>
+    <input type="file" id="importFile" accept=".json,application/json" hidden>
+    <span id="saveStatus"></span>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="col">
+    <section class="panel">
+      <div class="stage" id="stage">
+        <canvas id="view"></canvas>
+        <div class="loading" id="loading">Loading physics…</div>
+        <div class="hint" id="stageHint">Click near the body to shove it</div>
+      </div>
+      <div class="bar">
+        <div class="seg" id="skillTabs" role="group" aria-label="Skill"></div>
+        <div class="seg" id="modeTabs" role="group" aria-label="Mode">
+          <button data-mode="watch" aria-pressed="true">Watch</button>
+          <button data-mode="train" aria-pressed="false">Train</button>
+        </div>
+        <span class="grow"></span>
+        <span id="watchCtl"><button class="btn" id="restart">Restart</button></span>
+        <span id="trainCtl" hidden>
+          <label class="label" for="speed">Speed</label>
+          <select id="speed">
+            <option value="1">Real time (watch every try)</option>
+            <option value="12" selected>Fast</option>
+            <option value="40">Fastest</option>
+          </select>
+          <button class="btn go" id="trainBtn">Start training</button>
+        </span>
+      </div>
+      <div class="status">
+        <div><span class="label">Generation</span><b id="stGen">0</b></div>
+        <div><span class="label">Best score</span><b id="stBest" class="hue">—</b></div>
+        <div><span class="label">Difficulty</span><b id="stHard">—</b></div>
+        <div><span class="label" id="stOutLabel">Right now</span><b id="stOut">—</b></div>
+      </div>
+      <div class="skillnote" id="skillNote"></div>
+    </section>
+
+    <section class="panel">
+      <div class="head"><span class="label">Joints · angle (white), motor target (orange), effort</span></div>
+      <div class="body"><div class="joints" id="joints"></div></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="panel">
+      <div class="head"><span class="label">Brain · live</span><span class="label" id="brainInfo"></span></div>
+      <canvas class="fill" id="brainCanvas"></canvas>
+    </section>
+    <section class="panel">
+      <div class="head"><span class="label">Training progress</span></div>
+      <div class="body">
+        <canvas class="fill" id="chart"></canvas>
+        <div class="legend"><span class="best">best of generation</span><span class="mean">average</span></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="head"><span class="label">How this works</span></div>
+      <div class="body about">
+        <p>Each agent's body has <b>10 motorised joints</b> and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, feet on the ground, where the glass is) and sets a target angle and strength for every motor.</p>
+        <p><b>Nobody programs the movements.</b> Training tries 48 slightly different brains, keeps the ones that score best, and repeats. Two agents trained on the same skill end up moving differently, because each has its own random seed.</p>
+        <p>Skills build on each other: <b>Walk</b> and <b>Pick up the glass</b> start from the agent's <b>Stand</b> brain, because you have to balance before you can do anything else.</p>
+      </div>
+    </section>
+  </div>
+</div>
+
+<dialog id="newDlg">
+  <div class="head label">New agent</div>
+  <form method="dialog" class="body">
+    <label class="label" for="newName">Name</label>
+    <input type="text" id="newName" maxlength="24" autocomplete="off">
+    <span class="about">A new agent knows nothing. Its body will collapse until it learns to stand.</span>
+    <div class="row"><button class="btn" value="cancel">Cancel</button><button class="btn go" value="ok" id="newOk">Create</button></div>
+  </form>
+</dialog>
+<div id="toast"></div>
+
+<script src="vendor/rapier2d.js"></script>
+<script src="brain.js"></script>
+<script src="body2d.js"></script>
+<script src="starters.js"></script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
+const { DT, BIPED, SIZES, MOTORS, TASKS, GLASS, Trial, hardness, episodeConfigs, combineScores, wrap } = Body2D;
+let R = null;
+
+const SKILLS = ['stand', 'walk', 'grab'];
+const SKILL_NOTES = {
+  stand: '<strong>Stand.</strong> Stay upright and stay put while something shoves you every 2 seconds. Scored on time on your feet, minus drifting away.',
+  walk: '<strong>Walk.</strong> Get as far right as possible in 10 seconds without falling. Starts from the agent\'s Stand brain. Scored on distance plus time upright.',
+  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a table. Close the hand on it and lift it without tipping it past 50° (that spills it). Grab it low and it tips over; the agent has to work that out. Starts from the Stand brain.',
+};
+const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
+const NAMES = ['Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Echo', 'Tarn', 'Vale'];
+
+/* ================= agents & storage ================= */
+const LS_KEY = 'glassbox-embodied2d/agents';
+const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false };
+
+function agentFromStarter(name, data, i) {
+  const skills = {};
+  for (const k of SKILLS) if (data[k]) { const r = brainFromJSON(data[k]); if (r.ok) skills[k] = skillFromBrain(r.brain); }
+  return { id: 'a' + Date.now().toString(36) + i, name, seed: (skills.stand && skills.stand.seed) || i + 1, color: COLORS[i % COLORS.length], skills, starter: true };
+}
+function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, history: b.history || [], created: b.created, updated: b.updated }; }
+function skillToBrainJSON(agent, skill) {
+  const s = agent.skills[skill];
+  return brainToJSON({ name: agent.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, history: s.history, created: s.created, updated: s.updated });
+}
+function agentToJSON(a) {
+  const skills = {};
+  for (const k of SKILLS) if (a.skills[k]) skills[k] = skillToBrainJSON(a, k);
+  return { format: 'glassbox-body-agent', formatVersion: 1, app: 'Glass Box', exportedAt: new Date().toISOString(), name: a.name, seed: a.seed, color: a.color, bodyPlan: BIPED.id, skills };
+}
+function agentFromJSON(j, i) {
+  if (!j || j.format !== 'glassbox-body-agent') return null;
+  if (j.formatVersion > 1 || j.bodyPlan !== BIPED.id) return null;
+  const skills = {};
+  for (const k of SKILLS) if (j.skills && j.skills[k]) { const r = brainFromJSON(j.skills[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) skills[k] = skillFromBrain(r.brain); }
+  return { id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: String(j.name || 'Agent').slice(0, 24), seed: j.seed >>> 0 || 1, color: /^#[0-9a-f]{6}$/i.test(j.color) ? j.color : COLORS[i % COLORS.length], skills };
+}
+function saveAll() {
+  if (!App.dirty) return;
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({ v: 1, agentIndex: App.agents.indexOf(agent()), skill: App.skill, agents: App.agents.map(agentToJSON) }));
+    App.dirty = false; $('#saveStatus').textContent = 'saved';
+  } catch (e) { $('#saveStatus').textContent = 'not saved (storage blocked)'; }
+}
+function loadAll() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { d = null; }
+  if (d && Array.isArray(d.agents)) {
+    App.agents = d.agents.map(agentFromJSON).filter(Boolean);
+    if (App.agents.length) { App.agentId = (App.agents[d.agentIndex] || App.agents[0]).id; if (SKILLS.includes(d.skill)) App.skill = d.skill; }
+  }
+  if (!App.agents.length) {
+    const st = window.EMBODIED_STARTERS || {};
+    App.agents = Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i));
+    if (!App.agents.length) App.agents = [{ id: 'a0', name: 'Kit', seed: 1, color: COLORS[0], skills: {} }];
+    App.dirty = true;
+  }
+  if (!App.agents.some(a => a.id === App.agentId)) App.agentId = App.agents[0].id;
+}
+const agent = () => App.agents.find(a => a.id === App.agentId);
+function markDirty() { App.dirty = true; $('#saveStatus').textContent = 'unsaved'; }
+function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms); }
+
+/** The brain an agent uses for a skill. Walk and grab fall back to the stand brain (that's where training starts). */
+function brainFor(a, skill) {
+  if (a.skills[skill]) return { params: a.skills[skill].params, from: skill };
+  if (skill !== 'stand' && a.skills.stand) return { params: a.skills.stand.params, from: 'stand' };
+  return { params: Network.random(SIZES, makeRng(a.seed * 977 + skill.length)).params, from: null };
+}
+
+/* ================= watching ================= */
+const Watch = { trial: null, endAt: 0, outcome: '' };
+function startWatch() {
+  if (Watch.trial) Watch.trial.free();
+  const a = agent(), s = a.skills[App.skill], hard = s ? hardness(s.generation) : 0;
+  const variant = App.skill === 'grab' ? Math.floor(Math.random() * 3) - 1 : 0;
+  Watch.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], { seed: (Math.random() * 1e9) | 0, variant, hard, push: 0, noise: 0.02 * hard, keepSimulating: true });
+  Watch.endAt = 0;
+  View.camX = 0;
+}
+function stepWatch() {
+  const t = Watch.trial;
+  if (!t) return;
+  if (!t.finished) t.step();
+  else if (!Watch.endAt) Watch.endAt = performance.now() + 1600;
+  else if (performance.now() > Watch.endAt) startWatch();
+  else if (t.keepSimulating) for (const a of t.agents) a.world.step();   // let it settle
+}
+
+/* ================= training (time-sliced so the page stays smooth) ================= */
+const Train = {
+  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12,
+  start() {
+    const a = agent(), s = a.skills[App.skill], from = brainFor(a, App.skill);
+    this.skill = App.skill; this.agentId = a.id;
+    this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (s ? s.seed : a.seed * 31 + App.skill.length) + (s ? s.generation : 0), sigma: s ? s.sigma : 0.15,
+      parent: from.params, generation: s ? s.generation : 0, history: s ? s.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
+    if (!s && from.from === 'stand') toast(`Starting ${TASKS[App.skill].name} from ${a.name}'s Stand brain`);
+    this.running = true; this.newGeneration(); updateTrainButton();
+  },
+  stop() {
+    this.running = false;
+    if (this.trial) { this.trial.free(); this.trial = null; }
+    updateTrainButton();
+  },
+  newGeneration() {
+    this.episodes = episodeConfigs(this.skill, this.evo.generation); this.ep = 0; this.perEpisode = [];
+    this.newEpisode();
+  },
+  newEpisode() {
+    if (this.trial) this.trial.free();
+    this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]);
+  },
+  tick() {
+    if (!this.running) return;
+    const realtime = this.budget <= 1, until = performance.now() + this.budget;
+    do {
+      this.trial.step();
+      if (this.trial.finished) {
+        this.perEpisode.push(this.trial.scores());
+        if (++this.ep < this.episodes.length) this.newEpisode();
+        else { this.finishGeneration(); if (realtime) break; }
+      }
+    } while (!realtime && performance.now() < until);
+  },
+  finishGeneration() {
+    const r = this.evo.tell(combineScores(this.perEpisode));
+    const a = App.agents.find(x => x.id === this.agentId);
+    if (a) {
+      const now = new Date().toISOString(), prev = a.skills[this.skill];
+      a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, history: this.evo.history, created: prev ? prev.created : now, updated: now };
+      a.starter = false; markDirty();
+    }
+    renderStatus();
+    this.newGeneration();
+  },
+};
+function updateTrainButton() {
+  const b = $('#trainBtn');
+  b.textContent = Train.running ? 'Stop training' : 'Start training';
+  b.classList.toggle('on', Train.running);
+}
+
+/** The attempt doing best right now (by the task's own score), or the watched body. */
+function shown() {
+  const training = App.mode === 'train' && Train.running && Train.trial;
+  const t = training ? Train.trial : Watch.trial;
+  if (!t || !t.agents.length) return { t, a: null, training };
+  if (!training) return { t, a: t.agents[0], training };
+  let best = t.agents[0], bs = -Infinity;
+  for (const a of t.agents) { const sc = a.fitness !== undefined ? a.fitness - 50 : t.task.score(a.st, a.body); if (sc > bs) { bs = sc; best = a; } }
+  return { t, a: best, training };
+}
+
+/* ================= drawing the world ================= */
+const View = { camX: 0, scale: 100 };
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function fit(c) {
+  const r = c.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(r.width * d)), h = Math.max(1, Math.round(r.height * d));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return { ctx: c.getContext('2d'), w, h, d };
+}
+function drawWorld() {
+  const c = $('#view'), { ctx, w, h, d } = fit(c);
+  const { t: trial, a: lead, training } = shown();
+  ctx.fillStyle = '#0d0f12'; ctx.fillRect(0, 0, w, h);
+  if (!lead) return;
+  const focus = lead;
+  const s = View.scale = h / 2.5, gy = h * 0.86;
+  const tx = focus.body.pos().x;
+  View.camX += ((App.skill === 'walk' ? tx + 0.6 : 0.25) - View.camX) * 0.08;
+  const X = x => w / 2 + (x - View.camX) * s, Y = y => gy - y * s;
+  View.X = X; View.Y = Y;
+
+  // ground with metre marks
+  const mono = css('--mono');
+  ctx.strokeStyle = '#1f242b'; ctx.lineWidth = d;
+  const left = View.camX - w / 2 / s, right = View.camX + w / 2 / s;
+  for (let x = Math.floor(left * 4) / 4; x < right; x += 0.25) { ctx.beginPath(); ctx.moveTo(X(x), gy); ctx.lineTo(X(x) - 8 * d, gy + 8 * d); ctx.stroke(); }
+  ctx.strokeStyle = '#3a3f47'; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+  ctx.fillStyle = '#5a5f68'; ctx.font = `${10 * d}px ${mono}`; ctx.textAlign = 'center';
+  for (let x = Math.ceil(left); x < right; x++) { ctx.fillRect(X(x) - d / 2, gy, d, 6 * d); ctx.fillText(`${x} m`, X(x), gy + 20 * d); }
+  ctx.textAlign = 'left';
+
+  if (training) {
+    // every brain in this generation at once, faint; the leader solid
+    for (const a of trial.agents) if (a !== lead) { drawObjects(ctx, a, d, 0.12); drawBody(ctx, a.body, d, 0.16, false); }
+    drawObjects(ctx, lead, d, 1); drawBody(ctx, lead.body, d, 1, true);
+  } else {
+    drawObjects(ctx, trial.agents[0], d, 1);
+    drawBody(ctx, trial.agents[0].body, d, 1, true);
+  }
+  // shove arrow
+  if (View.shove && performance.now() - View.shove.t < 400) {
+    const p = View.shove, k = 1 - (performance.now() - p.t) / 400;
+    ctx.strokeStyle = `rgba(255,106,61,${k})`; ctx.lineWidth = 2 * d;
+    ctx.beginPath(); ctx.moveTo(p.x - p.dir * 40 * d, p.y); ctx.lineTo(p.x, p.y); ctx.lineTo(p.x - p.dir * 10 * d, p.y - 6 * d); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.dir * 10 * d, p.y + 6 * d); ctx.stroke();
+  }
+  // caption
+  ctx.font = `${11 * d}px ${mono}`; ctx.fillStyle = '#8a8f98';
+  const a = agent();
+  const cap = training ? `TRAINING · ${a.name} · ${TASKS[Train.skill].name} · generation ${Train.evo.generation + 1} · try ${Train.ep + 1}/${Train.episodes.length} · ${trial.time.toFixed(1)} s`
+    : `${a.name} · ${TASKS[App.skill].name} · ${trial.time.toFixed(1)} s`;
+  ctx.fillText(cap.toUpperCase(), 14 * d, 22 * d);
+  if (training) { ctx.fillStyle = '#5a5f68'; ctx.fillText(`${trial.agents.length} VARIATIONS AT ONCE (FAINT) · LEADER (SOLID)`, 14 * d, 38 * d); }
+}
+
+function drawObjects(ctx, a, d, alpha) {
+  const st = a.st, X = View.X, Y = View.Y, s = View.scale;
+  if (!st || !st.table) return;
+  ctx.globalAlpha = alpha;
+  const t = st.table.translation();
+  ctx.fillStyle = '#2a2420'; ctx.strokeStyle = '#4a3f36'; ctx.lineWidth = d;
+  ctx.fillRect(X(t.x - 0.14), Y(st.top), 0.28 * s, st.top * s); ctx.strokeRect(X(t.x - 0.14), Y(st.top), 0.28 * s, st.top * s);
+  // the glass, and its water
+  const g = st.glass, p = g.translation(), ang = g.rotation();
+  ctx.save(); ctx.translate(X(p.x), Y(p.y)); ctx.rotate(-ang);
+  const gw = GLASS.hx * s, gh = GLASS.hy * s;
+  if (!st.spilled) {
+    // water stays level while the glass tilts
+    ctx.save(); ctx.beginPath(); ctx.rect(-gw, -gh, gw * 2, gh * 2); ctx.clip();
+    ctx.rotate(ang); ctx.fillStyle = 'rgba(74,163,255,.75)'; ctx.fillRect(-gw * 3, -gh * 0.35, gw * 6, gh * 4); ctx.restore();
+  }
+  ctx.strokeStyle = 'rgba(232,230,225,.9)'; ctx.lineWidth = 1.5 * d;
+  ctx.beginPath(); ctx.moveTo(-gw, -gh); ctx.lineTo(-gw * 0.85, gh); ctx.lineTo(gw * 0.85, gh); ctx.lineTo(gw, -gh); ctx.stroke();
+  ctx.restore();
+  if (st.spilled) {   // a puddle where it went over
+    if (!st.puddle) st.puddle = { x: p.x, y: p.y < st.top + 0.2 && Math.abs(p.x - t.x) < 0.16 ? st.top : 0 };
+    ctx.fillStyle = 'rgba(74,163,255,.5)'; ctx.beginPath(); ctx.ellipse(X(st.puddle.x), Y(st.puddle.y), 0.14 * s, 0.012 * s, 0, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawBody(ctx, body, d, alpha, detail) {
+  const X = View.X, Y = View.Y, s = View.scale;
+  ctx.globalAlpha = alpha; ctx.lineCap = 'round';
+  const seg = (rb, hh, r, col) => {
+    const t = rb.translation(), a = rb.rotation(), dx = -Math.sin(a) * hh, dy = Math.cos(a) * hh;
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.5 * d, r * 2 * s);
+    ctx.beginPath(); ctx.moveTo(X(t.x + dx), Y(t.y + dy)); ctx.lineTo(X(t.x - dx), Y(t.y - dy)); ctx.stroke();
+  };
+  const box = (rb, hx, hy, col) => {
+    const t = rb.translation(), a = rb.rotation();
+    ctx.save(); ctx.translate(X(t.x), Y(t.y)); ctx.rotate(-a); ctx.fillStyle = col; ctx.fillRect(-hx * s, -hy * s, hx * 2 * s, hy * 2 * s); ctx.restore();
+  };
+  const P = body.parts, far = '#4a5260', near = detail ? '#e8e6e1' : '#9aa0aa';
+  const accent = agent().color;
+  for (const side of ['L', 'R']) {
+    const col = side === 'L' ? far : near;
+    if (side === 'R') { // torso and head between the two sides
+      box(P.torso, 0.11, 0.28, detail ? '#c9c6bf' : '#8a8f98');
+      const t = P.torso.translation(), a = P.torso.rotation();
+      ctx.fillStyle = detail ? accent : '#8a8f98'; ctx.beginPath(); ctx.arc(X(t.x - Math.sin(a) * 0.40), Y(t.y + Math.cos(a) * 0.40), 0.10 * s, 0, 7); ctx.fill();
+    }
+    seg(P['thigh' + side], 0.15, 0.06, col); seg(P['shin' + side], 0.165, 0.045, col); box(P['foot' + side], 0.12, 0.03, col);
+    seg(P['upper' + side], 0.11, 0.04, col); seg(P['fore' + side], 0.105, 0.035, col);
+    const f = P['fore' + side], ft = f.translation(), fa = f.rotation();
+    const hx = ft.x + Math.sin(fa) * 0.16, hy = ft.y - Math.cos(fa) * 0.16;
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(hx), Y(hy), 0.045 * s, 0, 7); ctx.fill();
+    if (side === 'R' && body.grip && detail) { ctx.strokeStyle = css('--hue'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.arc(X(hx), Y(hy), 0.07 * s, 0, 7); ctx.stroke(); }
+  }
+  if (detail) {   // motor effort arcs on the near-side joints and hips
+    for (const j of body.joints) {
+      if (j.spec.id.endsWith('L')) continue;
+      const pa = BIPED.parts.find(p => p.id === j.spec.a), rb = j.a, t = rb.translation(), a = rb.rotation();
+      const lx = j.spec.x - pa.x, ly = j.spec.y - pa.y, wx = t.x + lx * Math.cos(a) - ly * Math.sin(a), wy = t.y + lx * Math.sin(a) + ly * Math.cos(a);
+      const eff = effort(body, j);
+      ctx.strokeStyle = 'rgba(255,106,61,.95)'; ctx.lineWidth = 2 * d;
+      ctx.beginPath(); ctx.arc(X(wx), Y(wy), 0.075 * s, -Math.PI / 2, -Math.PI / 2 - eff * 2.6, eff > 0); ctx.stroke();
+      ctx.fillStyle = '#0d0f12'; ctx.strokeStyle = '#e8e6e1'; ctx.lineWidth = 1.4 * d;
+      ctx.beginPath(); ctx.arc(X(wx), Y(wy), 0.022 * s, 0, 7); ctx.fill(); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+/** How hard a joint's motor is pushing, -1..1 of its strength (approximate: the spring part of the motor). */
+function effort(body, j) {
+  const s = j.spec, err = j.target - body.angle(j);
+  return Math.max(-1, Math.min(1, (s.k * err) / s.max));
+}
+
+/* ================= side panels ================= */
+const OUT_NAMES = BIPED.joints.map(j => j.id).concat('grip');
+function drawBrain() {
+  const { a: lead } = shown();
+  const c = $('#brainCanvas'), { ctx, w, h, d } = fit(c);
+  ctx.clearRect(0, 0, w, h);
+  if (!lead) return;
+  const net = lead.net, L = net.sizes, A = net.acts, P = net.params;
+  const padT = 14 * d, padB = 16 * d, xs = [14 * d, w * 0.44, w - 112 * d];
+  const pos = L.map((n, k) => Array.from({ length: n }, (_, i) => [xs[k], padT + (n === 1 ? 0.5 : i / (n - 1)) * (h - padT - padB)]));
+  let pi = 0;
+  for (let k = 1; k < L.length; k++) for (let j = 0; j < L[k]; j++) {
+    for (let i = 0; i < L[k - 1]; i++) {
+      const sig = P[pi++] * A[k - 1][i], m = Math.min(1, Math.abs(sig));
+      if (m < 0.12) continue;
+      ctx.strokeStyle = sig > 0 ? `rgba(255,106,61,${m * 0.6})` : `rgba(160,170,185,${m * 0.35})`;
+      ctx.lineWidth = (0.4 + m) * d; ctx.beginPath(); ctx.moveTo(...pos[k - 1][i]); ctx.lineTo(...pos[k][j]); ctx.stroke();
+    }
+    pi++;   // bias
+  }
+  const mono = css('--mono');
+  ctx.font = `${9.5 * d}px ${mono}`;
+  A.forEach((layer, k) => layer.forEach((v, i) => {
+    const [x, y] = pos[k][i], r = (k === 0 ? 2.6 : 4) * d;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fillStyle = '#0a0b0d'; ctx.fill();
+    ctx.strokeStyle = '#3a3f47'; ctx.lineWidth = d; ctx.stroke();
+    const m = Math.min(1, Math.abs(v));
+    ctx.beginPath(); ctx.arc(x, y, r * m, 0, 7); ctx.fillStyle = v > 0 ? '#ff6a3d' : '#e8e6e1'; ctx.fill();
+    if (k === L.length - 1) { ctx.fillStyle = '#8a8f98'; ctx.fillText(`${OUT_NAMES[i]} ${v >= 0 ? '+' : ''}${v.toFixed(2)}`, x + 9 * d, y + 3 * d); }
+  }));
+  ctx.fillStyle = '#5a5f68';
+  ctx.fillText('SENSES', 6 * d, h - 3 * d); ctx.fillText('HIDDEN', xs[1] - 18 * d, h - 3 * d); ctx.fillText('MOTORS', xs[2] - 18 * d, h - 3 * d);
+  $('#brainInfo').textContent = `${L.join('-')} · ${P.length} weights`;
+}
+
+function buildJoints() {
+  $('#joints').innerHTML = BIPED.joints.map(j => `<span class="n">${j.id}</span><span class="jbar" id="jb-${j.id}"><s></s><i></i><u></u></span><span class="v" id="jv-${j.id}"></span>`).join('');
+}
+function updateJoints() {
+  const { a: lead } = shown();
+  if (!lead) return;
+  const body = lead.body;
+  for (const j of body.joints) {
+    const s = j.spec, f = v => ((v - s.lo) / (s.hi - s.lo)) * 100, ang = body.angle(j), eff = effort(body, j);
+    const bar = document.getElementById('jb-' + s.id);
+    bar.children[1].style.left = `calc(${Math.max(0, Math.min(100, f(ang)))}% - 1px)`;
+    bar.children[2].style.left = `calc(${Math.max(0, Math.min(100, f(j.target)))}% - 1px)`;
+    const e = Math.abs(eff) * 50; bar.children[0].style.left = (eff >= 0 ? 50 : 50 - e) + '%'; bar.children[0].style.width = e + '%';
+    document.getElementById('jv-' + s.id).textContent = `${Math.round(ang * 57.3)}°`;
+  }
+}
+
+function drawChart() {
+  const c = $('#chart'), { ctx, w, h, d } = fit(c);
+  ctx.clearRect(0, 0, w, h);
+  const s = agent().skills[App.skill], hist = Train.running && Train.agentId === App.agentId && Train.skill === App.skill ? Train.evo.history : s ? s.history : [];
+  const mono = css('--mono');
+  ctx.font = `${10 * d}px ${mono}`; ctx.fillStyle = '#5a5f68';
+  if (hist.length < 2) { ctx.fillText('No training yet for this skill.', 6 * d, h / 2); return; }
+  const g0 = hist[0][0], g1 = hist[hist.length - 1][0];
+  let lo = Infinity, hi = -Infinity;
+  for (const [, b, m] of hist) { lo = Math.min(lo, b, m); hi = Math.max(hi, b, m); }
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const pl = 34 * d, pb = 16 * d, X = g => pl + ((g - g0) / Math.max(1, g1 - g0)) * (w - pl - 6 * d), Y = v => (h - pb) - ((v - lo) / (hi - lo)) * (h - pb - 8 * d);
+  ctx.strokeStyle = '#23272e'; ctx.lineWidth = d;
+  for (let k = 0; k <= 3; k++) { const v = lo + (hi - lo) * k / 3, y = Y(v); ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(w, y); ctx.stroke(); ctx.fillText(v.toFixed(1), 2 * d, y + 3 * d); }
+  ctx.fillText(`gen ${g0}`, pl, h - 2 * d); ctx.textAlign = 'right'; ctx.fillText(`gen ${g1}`, w - 2 * d, h - 2 * d); ctx.textAlign = 'left';
+  const line = (idx, col, lw) => { ctx.strokeStyle = col; ctx.lineWidth = lw * d; ctx.beginPath(); hist.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(p[0]), Y(p[idx]))); ctx.stroke(); };
+  line(2, '#5a5f68', 1); line(1, css('--hue'), 1.8);
+}
+
+function renderStatus() {
+  const a = agent(), s = a.skills[App.skill];
+  const live = Train.running && Train.agentId === a.id && Train.skill === App.skill;
+  const gen = live ? Train.evo.generation : s ? s.generation : 0;
+  $('#stGen').textContent = gen;
+  $('#stBest').textContent = live && Train.evo.bestFitness > -Infinity ? Train.evo.bestFitness.toFixed(2) : s && s.history.length ? s.history[s.history.length - 1][1].toFixed(2) : '—';
+  const hd = hardness(gen);
+  $('#stHard').textContent = hd >= 1 ? 'Full' : `${Math.round(hd * 100)}%`;
+  $('#skillNote').innerHTML = SKILL_NOTES[App.skill] + (!s ? (App.skill !== 'stand' && a.skills.stand ? ' <br><span class="mono" style="color:var(--signal)">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="mono" style="color:var(--signal)">Not trained yet: this brain is random.</span>') : '');
+}
+function renderOutcome() {
+  const { t, a, training } = shown();
+  if (!a) return;
+  $('#stOutLabel').textContent = training ? 'Leader right now' : 'Right now';
+  $('#stOut').textContent = t.task.describe(a.st, a.body);
+}
+
+/* ================= UI wiring ================= */
+function refreshAgents() {
+  $('#agentPick').innerHTML = App.agents.map(a => `<option value="${a.id}" ${a.id === App.agentId ? 'selected' : ''}>${a.name.replace(/[<&>"]/g, '')}${a.starter ? ' (starter)' : ''}</option>`).join('');
+  $('#skillTabs').innerHTML = SKILLS.map(k => {
+    const s = agent().skills[k];
+    return `<button data-skill="${k}" aria-pressed="${k === App.skill}">${TASKS[k].name}${s ? ` · ${s.generation}` : ''}</button>`;
+  }).join('');
+}
+function select(changes) {
+  if (Train.running && (changes.agentId || changes.skill)) Train.stop();
+  Object.assign(App, changes);
+  refreshAgents(); renderStatus();
+  $('#modeTabs').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === App.mode));
+  $('#watchCtl').hidden = App.mode !== 'watch'; $('#trainCtl').hidden = App.mode !== 'train';
+  $('#stageHint').textContent = App.mode === 'watch' ? 'Click near the body to shove it' : '';
+  if (App.mode === 'watch' || changes.agentId || changes.skill) startWatch();
+  markDirty();
+}
+
+function wire() {
+  $('#agentPick').onchange = e => select({ agentId: e.target.value });
+  $('#skillTabs').onclick = e => { const b = e.target.closest('button'); if (b) select({ skill: b.dataset.skill }); };
+  $('#modeTabs').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== App.mode) { if (b.dataset.mode === 'watch') Train.stop(); select({ mode: b.dataset.mode }); } };
+  $('#restart').onclick = startWatch;
+  $('#speed').onchange = e => { Train.budget = +e.target.value; };
+  $('#trainBtn').onclick = () => { if (Train.running) { Train.stop(); refreshAgents(); } else Train.start(); };
+  $('#newAgent').onclick = () => { $('#newName').value = NAMES.find(n => !App.agents.some(a => a.name === n)) || 'Agent'; $('#newDlg').showModal(); $('#newName').select(); };
+  $('#newDlg').addEventListener('close', () => {
+    if ($('#newDlg').returnValue !== 'ok') return;
+    const name = $('#newName').value.trim().slice(0, 24) || 'Agent';
+    const a = { id: 'a' + Date.now().toString(36), name, seed: (Math.random() * 1e9) >>> 0, color: COLORS[App.agents.length % COLORS.length], skills: {} };
+    App.agents.push(a); select({ agentId: a.id, skill: 'stand', mode: 'watch' });
+    toast(`${name} knows nothing yet. Switch to Train to teach it to stand.`, 4000);
+  });
+  $('#exportBtn').onclick = () => {
+    const a = agent(), blob = new Blob([JSON.stringify(agentToJSON(a), null, 1)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = `${a.name.replace(/[^\w-]+/g, '_')}.glassbox-body.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+  $('#importBtn').onclick = () => $('#importFile').click();
+  $('#importFile').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    let j; try { j = JSON.parse(await f.text()); } catch (err) { return toast('That file is not JSON.'); }
+    if (j.format === 'glassbox-body-brain') {
+      const r = brainFromJSON(j);
+      if (!r.ok) return toast(r.error);
+      if (r.brain.bodyPlan !== BIPED.id || r.brain.sizes.join() !== SIZES.join() || !SKILLS.includes(r.brain.skill)) return toast('That brain is for a different body or skill.');
+      agent().skills[r.brain.skill] = skillFromBrain(r.brain); select({ skill: r.brain.skill });
+      return toast(`Loaded ${r.brain.name}'s ${TASKS[r.brain.skill].name} brain into ${agent().name}.`);
+    }
+    const a = agentFromJSON(j, App.agents.length);
+    if (!a) return toast('Not a Glass Box Embodied 2D agent file.');
+    App.agents.push(a); select({ agentId: a.id }); toast(`Imported ${a.name}.`);
+  };
+  // shove: click near the body
+  $('#view').addEventListener('pointerdown', e => {
+    if (App.mode !== 'watch' || !Watch.trial || !View.X) return;
+    const r = e.target.getBoundingClientRect(), d = e.target.width / r.width, px = (e.clientX - r.left) * d, py = (e.clientY - r.top) * d;
+    const body = Watch.trial.agents[0].body, t = body.torso.translation();
+    const dir = px < View.X(t.x) ? 1 : -1;
+    body.torso.applyImpulse({ x: dir * 45, y: 0 }, true);
+    View.shove = { x: View.X(t.x) - dir * 0.15 * View.scale, y: py, dir, t: performance.now() };
+  });
+}
+
+/* ================= main loop ================= */
+let last = 0, acc = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
+  if (App.mode === 'train' && Train.running) Train.tick();
+  else { acc += dt; let n = 0; while (acc >= DT && n++ < 4) { stepWatch(); acc -= DT; } }
+  drawWorld(); drawBrain(); updateJoints(); renderOutcome();
+  if (now - (frame.slow || 0) > 500) { frame.slow = now; drawChart(); if (Train.running) refreshTabsLight(); }
+}
+function refreshTabsLight() { const b = $(`#skillTabs button[data-skill="${Train.skill}"]`); if (b) b.textContent = `${TASKS[Train.skill].name} · ${Train.evo.generation}`; }
+
+loadAll();
+buildJoints(); wire();
+RAPIER.init().then(() => {
+  R = RAPIER;
+  $('#loading').remove();
+  select({});
+  requestAnimationFrame(frame);
+  setInterval(saveAll, 4000);
+  window.addEventListener('beforeunload', saveAll);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveAll(); });
+}).catch(err => { $('#loading').textContent = 'Physics failed to load: ' + err.message; });
+</script>
+</body>
+</html>
