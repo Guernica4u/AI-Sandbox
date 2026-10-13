@@ -20,6 +20,25 @@ trained examples.
 | **Train** | 48 variations per generation, in the background (you can keep watching or testing). |
 | **Test** | Move the limbs yourself (drag any part, or hold a slider; let go and the brain takes over) and see how the agent reacts. *Brain off* makes the body go limp; *Freeze time* pauses physics (sliders still pose it). Nothing here changes any brain or training run. |
 
+## Training speed
+
+- **All CPU cores:** by default, training runs in background workers, one per
+  spare CPU core, each scoring part of the 48 variations. The workers are built
+  from the page's own scripts (`__rapierFactory`, `__brainModule`,
+  `__body2dModule`), so this works from `file://` as well as on a website. If a
+  browser can't start workers, training falls back to running on the page.
+- **Keeps going in the background:** the worker loop doesn't depend on the
+  screen redrawing, so training continues when the tab is hidden or the window
+  is minimised (the tab title shows the generation). While training, the stage
+  replays the best brain so far.
+- **Measured:** about 6× faster than training on the page, on a 4-core machine
+  (more cores, more speed-up). Training continued at full speed with screen
+  redraws stopped (what a hidden tab does).
+- **Hopeless attempts end early:** a walker stuck for 4 s or out of energy, or a
+  spilled glass, stops being simulated and is scored as if it had stood still
+  until the end, so the ranking doesn't change.
+- *Real time (watch every try)* and *On this page only* still run the old way.
+
 ## Realism: why they walk the way they do
 
 Instead of rewarding a human-looking walk, the agents get the problems that
@@ -63,16 +82,20 @@ relax); the food moves from 6 m to 9.5–10.5 m; obstacles creep in from generat
 
 Success check (10 fixed runs) at each skill's full difficulty:
 
-| Agent | Stand | Walk to food (10 m, obstacles, limited energy) | Pick up the glass (movable table, no reference) |
+| Agent | Stand | Walk to food (~10 m, obstacles, limited energy) | Pick up the glass (movable table) |
 |---|---|---|---|
-| Kit | 10/10 | 0/10 | 0/10 |
-| Juno | 5/10 | 0/10 (gets ~5 m; 2/9 in training tests) | 0/10 (1/9 in training tests) |
-| Pax | 10/10 | 0/10 | 0/10 |
+| Kit | 10/10 | 8/10 | 0/10 |
+| Juno | 5/10 | 6/10 | 0/10 |
+| Pax | 10/10 | 6/10 | 0/10 |
 
-Honest status: with energy, fatigue, a time limit, obstacles and a table that
-moves, walking and grabbing are much harder, and the agents haven't mastered
-them at full difficulty yet. Feet: the gaits alternate and no foot stays up for
-long, but a fully flat heel-to-toe step hasn't emerged yet.
+The three walk brains come from one lineage, so they walk alike: a fast,
+stiff-kneed gait that alternates feet but slides them a lot. Grab on the
+movable table isn't mastered yet.
+
+**Tested and left off** (kept in the code as options): mirror-symmetric legs
+(one shared circuit for both legs) gave no better success or gait; a cost for
+dragging a foot cut sliding by only ~15% and broke agents already trained to
+scoot.
 
 ## Files
 

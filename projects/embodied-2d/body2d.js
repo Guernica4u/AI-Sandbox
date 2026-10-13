@@ -18,13 +18,15 @@
  Units: metres, kilograms, seconds, joules. y is up, the agent faces +x.
 ================================================================================
 */
-(function (root) {
+function __body2dModule(root) {   // a named function so the page can pass its source to training workers
 'use strict';
 
 const DT = 1 / 60;
 // muscles (see Biped.muscles): resting watts, watts per N·m of force held, multiplier on work done,
 // how fast sustained effort tires a joint, how fast rest recovers it
 const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 0.05;
+// dragging a foot along the ground (skin and friction): energy per metre slid while the foot touches the ground
+let SCUFF_J_PER_M = 0;   // tested at 800: sliding fell only ~15% and it broke already-trained scooting agents, so off
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
 const groups = (member, filter) => (member << 16) | filter;
 const wrap = a => a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));   // to -π..π
@@ -79,6 +81,27 @@ const MOTORS = BIPED.joints.length + 1;                                       //
 const SIZES = [SENSES, 32, MOTORS];
 // output groups for Evolution: legs (hips, knees, ankles) and arms + grip
 const OUTPUT_GROUPS = [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10]];
+
+/* Mirror-symmetric legs (a bilateral nervous system): when a brain is "symmetric", the right leg is driven
+   by the network as usual, and the left leg by the same network run on mirrored senses (left and right
+   swapped, the clock half a cycle later). Both legs then share one circuit, half a step apart, like the
+   paired circuits in a real spinal cord. Arms and grip always come from the normal pass.            */
+const MIRROR_SWAPS = [];
+{
+  const ji = id => BIPED.joints.findIndex(j => j.id === id), NJ = BIPED.joints.length;
+  for (const [l, r] of [['hipL', 'hipR'], ['kneeL', 'kneeR'], ['ankleL', 'ankleR'], ['shoulderL', 'shoulderR'], ['elbowL', 'elbowR']]) {
+    MIRROR_SWAPS.push([6 + ji(l), 6 + ji(r)], [6 + NJ + ji(l), 6 + NJ + ji(r)]);   // joint angles, joint speeds
+  }
+  MIRROR_SWAPS.push([26, 28], [27, 29], [30, 31]);                                  // heel/toe pressure, foot height
+}
+const LEG_L = ['hipL', 'kneeL', 'ankleL'].map(id => BIPED.joints.findIndex(j => j.id === id));
+const LEG_R = ['hipR', 'kneeR', 'ankleR'].map(id => BIPED.joints.findIndex(j => j.id === id));
+function mirrorSenses(inp, out) {
+  out.set(inp);
+  for (const [a, b] of MIRROR_SWAPS) { out[a] = inp[b]; out[b] = inp[a]; }
+  out[32] = -inp[32]; out[33] = -inp[33];                                           // clock: half a cycle later
+  return out;
+}
 
 /* ---------- one agent's body ---------- */
 class Biped {
@@ -185,6 +208,7 @@ class Biped {
       const strength = (1 - 0.6 * j.fatigue) * low;
       if (Math.abs(strength - (j.strength || 1)) > 0.01) { j.strength = strength; j.joint.setMotorMaxForce(s.max * strength); }
     }
+    if (SCUFF_J_PER_M) for (const id of ['footL', 'footR']) if (this.footEnd(id, -1) < 0.012 || this.footEnd(id, 1) < 0.012) w += SCUFF_J_PER_M * Math.abs(this.parts[id].linvel().x);
     this.energyLeft = Math.max(0, this.energyLeft - w * DT);
     this.used += w * DT;
     this.power += (w - this.power) * 0.05;
@@ -393,6 +417,14 @@ const TASKS = {
       if (st.reachedAt === null && body.pos().x >= st.foodX - 0.3) st.reachedAt = trial ? trial.time : 0;
     },
     done(st) { return st.reachedAt !== null; },
+    // stuck (less than 25 cm of progress in 4 s) or out of energy: it won't get there now
+    hopeless(st, body, trial) {
+      if (trial.steps % 30) return false;
+      const x = body.pos().x, hist = st.xHist || (st.xHist = []);
+      hist.push(x); if (hist.length > 9) hist.shift();
+      return (hist.length === 9 && x - hist[0] < 0.25) || body.energyLeft <= 0;
+    },
+    creditRest(st, body, trial) { st.alive += (trial.maxSteps - trial.steps) * DT; },
     score(st, body) {
       const x = Math.min(body.pos().x, st.foodX);
       let f = x + st.alive * 0.3 - (body.fallen ? 2 : 0);
@@ -466,6 +498,8 @@ const TASKS = {
       return st.tableOver ? 'knocked the table over' : st.spilled ? 'spilled' : body.grip ? `holding · lifted ${(Math.max(0, st.lift) * 100).toFixed(0)} cm` : st.grabbed ? 'dropped it' : `hand ${(st.minDist * 100).toFixed(0)} cm away`;
     },
     success(st, body) { return !st.spilled && !st.tableOver && !!body.grip && st.lift >= 0.1 && !body.fallen; },
+    hopeless(st) { return st.spilled || st.tableOver; },   // the water is gone
+    creditRest(st, body, trial) { st.alive += (trial.maxSteps - trial.steps) * DT; },
     successText: 'lifted the glass 10 cm without spilling',
   },
 };
@@ -487,6 +521,9 @@ class Trial {
     this.override = opts.override || null;           // test mode: { jointId: angle } you're moving
     this.gripOverride = opts.gripOverride === undefined ? null : opts.gripOverride;   // test mode: hand forced open (-1) or closed (1)
     this.brainOff = false;                           // test mode: motors slack, the body doesn't react
+    this.symmetric = !!opts.symmetric;               // mirror-symmetric legs (see mirrorSenses)
+    this.mirrored = new Float32Array(SENSES); this.legOut = new Float32Array(3);
+    this.earlyStop = opts.earlyStop !== undefined ? opts.earlyStop : !opts.keepSimulating;   // end hopeless attempts early (training)
     this.rng = Brain.makeRng(opts.seed || 1);
     this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.4 * (opts.push === undefined ? 1 : opts.push);
@@ -512,7 +549,13 @@ class Trial {
       if (a.done) { if (this.keepSimulating) a.world.step(); continue; }
       a.body.sense(inp, this.time, this.task.senseTask(a.st, a.body));
       if (this.noise) for (let i = 0; i < inp.length; i++) inp[i] += (rng() - 0.5) * 2 * this.noise;
-      const out = a.net.forward(inp);
+      let out;
+      if (this.symmetric) {
+        const lo = a.net.forward(mirrorSenses(inp, this.mirrored));
+        for (let k = 0; k < 3; k++) this.legOut[k] = lo[LEG_R[k]];
+        out = a.net.forward(inp);
+        for (let k = 0; k < 3; k++) out[LEG_L[k]] = this.legOut[k];
+      } else out = a.net.forward(inp);
       if (this.gripOverride !== null) out[MOTORS - 1] = this.gripOverride;
       if (this.brainOff) a.body.relax(); else a.body.act(out, this.override);
       this.task.step(a.st, a.body, out, this);
@@ -521,6 +564,11 @@ class Trial {
       a.body.muscles();
       if (a.body.checkFallen()) { a.done = true; a.fitness = this.score(a); a.success = false; }
       else if (this.task.done && this.task.done(a.st, a.body)) { a.done = true; a.fitness = this.score(a); a.success = true; }
+      else if (this.earlyStop && this.task.hopeless && this.task.hopeless(a.st, a.body, this)) {
+        // can't succeed any more: stop simulating it, scored as if it had stood there until the end
+        if (this.task.creditRest) this.task.creditRest(a.st, a.body, this);
+        a.done = true; a.fitness = this.score(a); a.success = false;
+      }
     }
     this.time += DT; this.steps++;
   }
@@ -556,7 +604,7 @@ const hardness = generation => Math.min(1, generation / 150);
 /** The episodes every brain in a generation is tested on (same for all, so it's fair). */
 /** Grip assist for a generation: full at first, gone by generation 200. */
 const gripAssist = generation => Math.max(0, 1 - generation / 200);
-function episodeConfigs(taskId, generation) {
+function episodeConfigs(taskId, generation, extra) {
   const hard = hardness(generation), n = taskId === 'grab' ? 3 : 2, out = [];
   for (let e = 0; e < n; e++) out.push({
     seed: generation * 7919 + e * 104729 + 1,
@@ -564,6 +612,7 @@ function episodeConfigs(taskId, generation) {
     hard, push: hard, noise: 0.02 * hard,             // curriculum: shoves, sensor noise and obstacles grow with training
     assist: taskId === 'grab' ? gripAssist(generation) : 0,
     terrainLevel: terrainLevel(generation),
+    symmetric: !!(extra && extra.symmetric),
   });
   return out;
 }
@@ -575,17 +624,18 @@ function combineScores(perEpisode) {
   });
 }
 /** Scores a whole population in one go (used for training outside the page, e.g. in Node). */
-function evaluate(R, taskId, population, generation) {
-  return combineScores(episodeConfigs(taskId, generation).map(cfg => {
+function evaluate(R, taskId, population, generation, extra) {
+  return combineScores(episodeConfigs(taskId, generation, extra).map(cfg => {
     const tr = new Trial(R, taskId, population, cfg), sc = tr.run();
     tr.free();
     return sc;
   }));
 }
 
-const api = { DT, BIPED, SENSES, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
+const api = { DT, BIPED, SENSES, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
   makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER };
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this);
+}
+__body2dModule(typeof globalThis !== 'undefined' ? globalThis : this);
