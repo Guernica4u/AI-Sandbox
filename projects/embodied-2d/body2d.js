@@ -603,12 +603,24 @@ class Trial {
 
 /** A brand-new random brain, set up so its commands start at the relaxed standing pose (with the even mapping,
     a raw random brain would start in the middle of every joint's range: a deep crouch it can't stand up from). */
-function freshBrain(rng) {
-  const net = Brain.Network.random(SIZES, rng), hid = SIZES[1], start = SIZES[1] * (SIZES[0] + 1);
+function freshBrain(rng, opts = {}) {
+  const net = Brain.Network.random(SIZES, rng), inp = SIZES[0], hid = SIZES[1], start = hid * (inp + 1);
   if (ACT_LINEAR) BIPED.joints.forEach((j, o) => {
     const [lo, hi] = cmdRange(j), u = Math.max(-0.9, Math.min(0.9, (j.rest - (lo + hi) / 2) / ((hi - lo) / 2)));
     net.params[start + o * (hid + 1) + hid] = Math.atanh(u);   // output bias
   });
+  // Stepping reflex (newborns have one): two hidden cells follow the 1 Hz clock, and each leg lifts and swings
+  // half a cycle after the other. Only a starting point; evolution keeps, reshapes or drops it.
+  if (opts.reflex) {
+    const a = opts.reflex, cell = (h, ci) => { const row = h * (inp + 1); for (let q = 0; q <= inp; q++) net.params[row + q] = 0; net.params[row + ci] = 2; };
+    cell(0, 32); cell(1, 33);                                                    // h0 ~ sin(clock), h1 ~ cos(clock)
+    const w = (out, h, v) => { net.params[start + out * (hid + 1) + h] = v; }, ji = id => BIPED.joints.findIndex(j => j.id === id);
+    for (const [side, sg] of [['L', 1], ['R', -1]]) {
+      for (let h = 0; h < 2; h++) { w(ji('knee' + side), h, 0); w(ji('hip' + side), h, 0); }
+      w(ji('knee' + side), 0, -1.0 * a * sg);                                    // knee folds while that leg swings
+      w(ji('hip' + side), 1, -0.35 * a * sg);                                    // hip swings forward a quarter cycle later
+    }
+  }
   return net.params;
 }
 
