@@ -26,6 +26,10 @@ const DT = 1 / 60;
 // how fast sustained effort tires a joint, how fast rest recovers it
 const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 0.05;
 // dragging a foot along the ground (skin and friction): energy per metre slid while the foot touches the ground
+// How a brain's command (-1..1) maps to a joint's target angle. Linear: evenly across the whole range (0 = the middle).
+// The old mapping put 0 at the relaxed pose, which for the knee is nearly straight, so the entire positive half of the
+// command range meant "straight": brains saturated there (knee command pinned at +1 99% of the time) and never bent.
+let ACT_LINEAR = false;
 let SCUFF_J_PER_M = 0;   // tested at 800: sliding fell only ~15% and it broke already-trained scooting agents, so off
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
 const groups = (member, filter) => (member << 16) | filter;
@@ -177,7 +181,8 @@ class Biped {
   act(actions, override) {
     for (let k = 0; k < this.joints.length; k++) {
       const j = this.joints[k], s = j.spec, u = Math.max(-1, Math.min(1, actions[k]));
-      let target = u >= 0 ? s.rest + u * (s.hi - s.rest) : s.rest + u * (s.rest - s.lo);
+      let target = ACT_LINEAR ? (s.lo + s.hi) / 2 + u * (s.hi - s.lo) / 2
+        : u >= 0 ? s.rest + u * (s.hi - s.rest) : s.rest + u * (s.rest - s.lo);
       if (override && override[s.id] !== undefined) target = override[s.id];   // testing: a joint you're moving
       j.target = target;
       j.joint.configureMotorPosition(target, s.k, s.d);
@@ -281,8 +286,13 @@ function distToBox(p, body, hx, hy) {
    Sticks you trip over if you drag your feet, and logs you have to step over.
    The same obstacles are used for every brain in an attempt (fair), and they
    grow with the curriculum: none at first, small sticks, then logs.           */
-function makeTerrain(rng, level) {
+// Rough ground: small stones every 15-40 cm, up to 2 cm high (growing with the curriculum). Real ground is
+// never smooth; a stiff leg dragged along it catches and trips, which is why people bend the swinging knee.
+let ROUGH_GROUND = false;
+function makeTerrain(rng, level, rough) {
   const out = [];
+  if (ROUGH_GROUND && rough > 0.02) for (let x = 0.6 + rng() * 0.3; x < 22; x += 0.15 + rng() * 0.25)
+    out.push({ x, w: 0.02 + rng() * 0.02, h: 0.006 + rng() * 0.014 * rough, kind: 'pebble' });
   if (level <= 0.02) return out;
   for (let x = 1.5 + rng() * 0.8; x < 16; x += 1.5 + rng() * (2.5 - level)) {
     const log = level > 0.5 && rng() < (level - 0.5) * 0.7;
@@ -528,7 +538,8 @@ class Trial {
     this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.4 * (opts.push === undefined ? 1 : opts.push);
     this.terrainLevel = opts.terrainLevel === undefined ? this.hard : opts.terrainLevel;
-    this.terrain = opts.terrain || (this.task.terrain ? makeTerrain(this.rng, this.terrainLevel) : []);
+    this.roughness = opts.roughness === undefined ? this.hard : opts.roughness;
+    this.terrain = opts.terrain || (this.task.terrain ? makeTerrain(this.rng, this.terrainLevel, this.roughness) : []);
     this.foodX = opts.foodX || 6 + 3.5 * this.hard + this.rng() * this.hard;   // walk: food gets farther with the curriculum (6 → 9.5-10.5 m)
     // energy gets scarce with the curriculum: 5x the store at first (learn to balance stiffly, like a toddler),
     // the real store at full difficulty (then only relaxed, efficient bodies last)
@@ -577,6 +588,17 @@ class Trial {
   scores() { return this.agents.map(a => a.fitness !== undefined ? a.fitness : this.score(a)); }
   successes() { return this.agents.map(a => a.success !== undefined ? a.success : !!this.task.success(a.st, a.body)); }
   free() { for (const a of this.agents) a.world.free(); this.agents = []; }
+}
+
+/** A brand-new random brain, set up so its commands start at the relaxed standing pose (with the even mapping,
+    a raw random brain would start in the middle of every joint's range: a deep crouch it can't stand up from). */
+function freshBrain(rng) {
+  const net = Brain.Network.random(SIZES, rng), hid = SIZES[1], start = SIZES[1] * (SIZES[0] + 1);
+  if (ACT_LINEAR) BIPED.joints.forEach((j, o) => {
+    const u = Math.max(-0.9, Math.min(0.9, (j.rest - (j.lo + j.hi) / 2) / ((j.hi - j.lo) / 2)));
+    net.params[start + o * (hid + 1) + hid] = Math.atanh(u);   // output bias
+  });
+  return net.params;
 }
 
 /** Senses that a skill never uses (always 0 while training it), by index into the sense list. */
@@ -632,9 +654,9 @@ function evaluate(R, taskId, population, generation, extra) {
   }));
 }
 
-const api = { DT, BIPED, SENSES, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
+const api = { DT, BIPED, SENSES, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
   makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; } };
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 }

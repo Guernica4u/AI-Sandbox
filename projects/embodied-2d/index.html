@@ -265,7 +265,7 @@ let R = null;
 const SKILLS = ['stand', 'walk', 'grab'];
 const SKILL_NOTES = {
   stand: '<strong>Stand.</strong> Stay upright and in place while something shoves you every 2 seconds. Sitting, kneeling and the splits count as falling. Scored on time on your feet, minus drifting and a too-wide stance.',
-  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. Sticks (drag your feet and you trip) and logs appear as training goes on. Starts from the agent\'s Stand brain.',
+  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. The ground is rough (small stones), and sticks and logs appear as training goes on: drag your feet and you trip. Starts from the agent\'s Stand brain.',
   grab: '<strong>Pick up the glass.</strong> A glass of water stands on a free-standing table (lean on it and it slides, bump it and it tips). Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
 };
 const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
@@ -692,6 +692,10 @@ function drawWorld() {
   // obstacles
   for (const o of trial.terrain || []) {
     if (o.x + o.w < left || o.x - o.w > right) continue;
+    if (o.kind === 'pebble') {   // small stones on rough ground
+      ctx.fillStyle = '#6b6f76'; ctx.beginPath(); ctx.ellipse(X(o.x), Y(o.h / 2), o.w / 2 * s, o.h / 2 * s + 0.5 * d, 0, 0, 7); ctx.fill();
+      continue;
+    }
     ctx.fillStyle = o.kind === 'log' ? '#5a4232' : '#7a5a3a'; ctx.strokeStyle = o.kind === 'log' ? '#8a6a4f' : '#9a7a52'; ctx.lineWidth = d;
     const r = Math.min(o.h, o.w) * s * 0.45;
     ctx.beginPath(); ctx.roundRect(X(o.x - o.w / 2), Y(o.h), o.w * s, o.h * s, r); ctx.fill(); ctx.stroke();
