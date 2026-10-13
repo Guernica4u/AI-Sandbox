@@ -32,6 +32,10 @@ const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 
 let ACT_LINEAR = false;
 // commands may reach past the straight-knee stop (pushing into it costs effort), so "straight" isn't the end of the range
 let KNEE_OVER = 0;
+// energy per N·m for pushing a knee into its straight stop (commands past straight). Real knees lock on their
+// ligaments for free; straining the muscles into hyperextension isn't free. Without this, brains pressed the knee into
+// the stop at full force (rock-solid, nearly free), pinning the command at its limit where evolution can't move it.
+let STOP_W_PER_NM = 0;
 const cmdRange = s => [s.lo, s.hi + (KNEE_OVER && s.id.startsWith('knee') ? KNEE_OVER : 0)];
 // two-joint calf muscle (gastrocnemius): pushing off with the toes also pulls the knee into a bend, as in a real leg.
 // The fraction of the ankle's toes-down torque that also flexes the knee. 0 = off.
@@ -218,6 +222,7 @@ class Biped {
         const knee = this.joints[this.joints.indexOf(j) - 1], tq = GASTRO * Math.max(torque, -s.max * (j.strength || 1)) * DT;
         knee.b.applyTorqueImpulse(tq, true); knee.a.applyTorqueImpulse(-tq, true);
       }
+      if (STOP_W_PER_NM && j.target > s.hi) w += STOP_W_PER_NM * Math.min(s.max, s.k * (j.target - s.hi));
       w += HOLD_W_PER_NM * Math.abs(torque) + WORK_EFF * Math.abs(torque * rel);
       // effort cubed: walking-level effort (~0.5) barely tires (settles ~20%), hard sustained effort (tiptoe, ~0.9) wears out fast
       j.fatigue = Math.max(0, Math.min(1, j.fatigue + DT * (TIRE * effort * effort * effort - RECOVER * j.fatigue)));
@@ -679,7 +684,7 @@ function evaluate(R, taskId, population, generation, extra) {
 
 const api = { DT, BIPED, SENSES, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
   makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; }, setKneeOver: v => { KNEE_OVER = v; }, setGastro: v => { GASTRO = v; } };
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; }, setKneeOver: v => { KNEE_OVER = v; }, setGastro: v => { GASTRO = v; }, setStopW: v => { STOP_W_PER_NM = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 }
