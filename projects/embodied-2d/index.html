@@ -109,6 +109,7 @@ select { background: var(--surface2); border: 1px solid var(--line2); padding: 6
 .skillnote { padding: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .skillnote strong { color: var(--text); font-weight: 600; }
 .warn { color: var(--signal); font-family: var(--mono); font-size: 12px; }
+.knees { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 
 /* side panels */
 canvas.fill { display: block; width: 100%; }
@@ -258,14 +259,14 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
-const { DT, BIPED, SIZES, MOTORS, TASKS, GLASS, TABLE, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
+const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
   REFERENCE, clipPose, poseParts } = Body2D;
 let R = null;
 
 const SKILLS = ['stand', 'walk', 'grab'];
 const SKILL_NOTES = {
   stand: '<strong>Stand.</strong> Stay upright and in place while something shoves you every 2 seconds. Sitting, kneeling and the splits count as falling. Scored on time on your feet, minus drifting and a too-wide stance.',
-  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. The ground is rough (small stones), and sticks and logs appear as training goes on: drag your feet and you trip. Starts from the agent\'s Stand brain.',
+  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. Sticks (drag your feet and you trip) and logs appear as training goes on. Starts from the agent\'s Stand brain.',
   grab: '<strong>Pick up the glass.</strong> A glass of water stands on a free-standing table (lean on it and it slides, bump it and it tips). Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
 };
 const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
@@ -276,7 +277,7 @@ const LS_KEY = 'glassbox-embodied2d/v3';
 const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false, ghost: false };
 const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, history: b.history || [], created: b.created, updated: b.updated }; }
+function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history || [], created: b.created, updated: b.updated }; }
 function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], skills: {}, tests: {} }; }
 function agentFromStarter(name, data, i) {
   const a = blankAgent(name, i, 0);
@@ -286,7 +287,7 @@ function agentFromStarter(name, data, i) {
 }
 function skillToBrainJSON(a, skill) {
   const s = a.skills[skill];
-  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, symmetric: s.symmetric, history: s.history, created: s.created, updated: s.updated });
+  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, symmetric: s.symmetric, springy: s.springy, history: s.history, created: s.created, updated: s.updated });
 }
 function agentToJSON(a) {
   const skills = {};
@@ -325,6 +326,7 @@ function loadAll() {
     // refresh the example agents if this version ships newer ones (your own agents are untouched)
     const fresh = starterAgents(1);
     App.agents = App.agents.map(a => a.starter ? (fresh.find(f => f.name === a.name) || a) : a);
+    for (const f of fresh) if (!App.agents.some(a => a.starter && a.name === f.name)) { App.agents.push(f); App.dirty = true; }
   }
   if (!App.agents.length) {
     // first visit: an untrained agent of your own, plus the trained examples
@@ -339,17 +341,20 @@ function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.c
 
 /** The brain an agent uses for a skill. Walk and grab start from the stand brain (with unused senses cut). */
 function brainFor(a, skill) {
-  if (a.skills[skill]) return { params: a.skills[skill].params, from: skill, symmetric: !!a.skills[skill].symmetric };
-  if (skill !== 'stand' && a.skills.stand) return { params: transferBrain(a.skills.stand.params, 'stand', skill), from: 'stand', symmetric: !!a.skills.stand.symmetric };
-  return { params: Network.random(SIZES, makeRng(a.seed * 977 + skill.length)).params, from: null, symmetric: SYMMETRIC_DEFAULT };
+  const own = a.skills[skill], st = a.skills.stand;
+  if (own) return { params: own.params, from: skill, symmetric: !!own.symmetric, springy: !!own.springy };
+  if (skill !== 'stand' && st) return { params: transferBrain(st.params, 'stand', skill), from: 'stand', symmetric: !!st.symmetric, springy: !!st.springy };
+  return { params: freshBrain(makeRng(a.seed * 977 + skill.length), SPRINGY_DEFAULT), from: null, symmetric: SYMMETRIC_DEFAULT, springy: SPRINGY_DEFAULT };
 }
 // New brains get mirror-symmetric legs (one shared circuit for both legs, half a step apart).
 // Brains trained without it (like ones imported from before) keep running the way they were trained.
 const SYMMETRIC_DEFAULT = false;   // tested: no better success or gait than free legs, so off by default
+// New brains get springy knees (see body2d.js). Brains trained with the old stiff knees keep them.
+const SPRINGY_DEFAULT = true;
 /** Curriculum settings for watching or testing a skill at its current level. */
 function levelOpts(a, skill) {
   const g = a.skills[skill] ? a.skills[skill].generation : 0, hard = hardness(g);
-  return { hard, terrainLevel: terrainLevel(g), assist: skill === 'grab' ? gripAssist(g) : 0, noise: 0.02 * hard, symmetric: brainFor(a, skill).symmetric };
+  return { hard, terrainLevel: terrainLevel(g), assist: skill === 'grab' ? gripAssist(g) : 0, noise: 0.02 * hard, symmetric: brainFor(a, skill).symmetric, springy: brainFor(a, skill).springy };
 }
 
 /* ================= watching ================= */
@@ -464,11 +469,11 @@ const Pool = {
 /* ================= training ================= */
 const Train = {
   running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12,
-  speed: 'pool', mode: 'main', token: 0, demo: null, demoEnd: 0, symmetric: false, lastGenAt: 0, genSecs: 0,
+  speed: 'pool', mode: 'main', token: 0, demo: null, demoEnd: 0, symmetric: false, springy: false, lastGenAt: 0, genSecs: 0,
   start() {
     if (this.running) this.stop();
     const a = agent(), s = a.skills[App.skill], from = brainFor(a, App.skill);
-    this.skill = App.skill; this.agentId = a.id; this.symmetric = from.symmetric;
+    this.skill = App.skill; this.agentId = a.id; this.symmetric = from.symmetric; this.springy = from.springy;
     this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (s ? s.seed : a.seed * 31 + App.skill.length) + (s ? s.generation : 0), sigma: s ? s.sigma : 0.15,
       parent: from.params, generation: s ? s.generation : 0, history: s ? s.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
     if (!s && from.from === 'stand') toast(`Starting ${TASKS[App.skill].name} from ${a.name}'s Stand brain`);
@@ -489,7 +494,7 @@ const Train = {
   async loopPool(token) {
     while (this.running && token === this.token) {
       let per;
-      try { per = await Pool.run(this.skill, episodeConfigs(this.skill, this.evo.generation, { symmetric: this.symmetric }), this.evo.population); }
+      try { per = await Pool.run(this.skill, episodeConfigs(this.skill, this.evo.generation, { symmetric: this.symmetric, springy: this.springy }), this.evo.population); }
       catch (err) {
         if (token !== this.token) return;
         toast('Background training stopped working; continuing on the page.', 4000);
@@ -499,7 +504,7 @@ const Train = {
       this.perEpisode = per; this.finishGeneration();
     }
   },
-  newGeneration() { this.episodes = episodeConfigs(this.skill, this.evo.generation, { symmetric: this.symmetric }); this.ep = 0; this.perEpisode = []; this.newEpisode(); },
+  newGeneration() { this.episodes = episodeConfigs(this.skill, this.evo.generation, { symmetric: this.symmetric, springy: this.springy }); this.ep = 0; this.perEpisode = []; this.newEpisode(); },
   newEpisode() { if (this.trial) this.trial.free(); this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]); },
   tick() {
     if (!this.running || this.mode !== 'main') return;
@@ -519,7 +524,7 @@ const Train = {
     const a = App.agents.find(x => x.id === this.agentId);
     if (a) {
       const t = new Date().toISOString(), prev = a.skills[this.skill];
-      a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, symmetric: this.symmetric,
+      a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, symmetric: this.symmetric, springy: this.springy,
         history: this.evo.history, created: prev ? prev.created : t, updated: t };
       a.starter = false; markDirty();
     }
@@ -692,10 +697,6 @@ function drawWorld() {
   // obstacles
   for (const o of trial.terrain || []) {
     if (o.x + o.w < left || o.x - o.w > right) continue;
-    if (o.kind === 'pebble') {   // small stones on rough ground
-      ctx.fillStyle = '#6b6f76'; ctx.beginPath(); ctx.ellipse(X(o.x), Y(o.h / 2), o.w / 2 * s, o.h / 2 * s + 0.5 * d, 0, 0, 7); ctx.fill();
-      continue;
-    }
     ctx.fillStyle = o.kind === 'log' ? '#5a4232' : '#7a5a3a'; ctx.strokeStyle = o.kind === 'log' ? '#8a6a4f' : '#9a7a52'; ctx.lineWidth = d;
     const r = Math.min(o.h, o.w) * s * 0.45;
     ctx.beginPath(); ctx.roundRect(X(o.x - o.w / 2), Y(o.h), o.w * s, o.h * s, r); ctx.fill(); ctx.stroke();
@@ -947,6 +948,7 @@ function renderStatus() {
   }
   let note = SKILL_NOTES[App.skill];
   if (!s) note += App.skill !== 'stand' && a.skills.stand ? ' <br><span class="warn">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="warn">Not trained yet: this brain is random, so the body just collapses. Train it!</span>';
+  else if (!brainFor(a, App.skill).springy) note += ' <br><span class="knees">Old stiff knees: this brain learned before springy knees, so it keeps them. Brains started from scratch get springy knees.</span>';
   $('#skillNote').innerHTML = note;
 }
 function renderOutcome() {

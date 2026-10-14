@@ -25,21 +25,14 @@ const DT = 1 / 60;
 // muscles (see Biped.muscles): resting watts, watts per N·m of force held, multiplier on work done,
 // how fast sustained effort tires a joint, how fast rest recovers it
 const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 0.05;
+/* Springy knees (a body option: on for new brains; brains trained before it keep the old knees).
+   1. The brain's command (-1..1) maps evenly across each joint's range. The old mapping put 0 at the relaxed pose,
+      which for the knee is nearly straight, so the whole positive half meant "straight": knee commands sat pinned at
+      +1, where small changes do nothing and evolution never finds a bend. (The even mapping also halved foot sliding.)
+   2. Softer knee muscles (stiffness 1000 instead of 3500), like a real knee that hangs loose while the leg swings.
+   With both, some agents learn to fold the swinging leg; a stiff-legged walk is still what many end up with.   */
+const SPRINGY_KNEE = { k: 1000, d: 26 };
 // dragging a foot along the ground (skin and friction): energy per metre slid while the foot touches the ground
-// How a brain's command (-1..1) maps to a joint's target angle. Linear: evenly across the whole range (0 = the middle).
-// The old mapping put 0 at the relaxed pose, which for the knee is nearly straight, so the entire positive half of the
-// command range meant "straight": brains saturated there (knee command pinned at +1 99% of the time) and never bent.
-let ACT_LINEAR = false;
-// commands may reach past the straight-knee stop (pushing into it costs effort), so "straight" isn't the end of the range
-let KNEE_OVER = 0;
-// energy per N·m for pushing a knee into its straight stop (commands past straight). Real knees lock on their
-// ligaments for free; straining the muscles into hyperextension isn't free. Without this, brains pressed the knee into
-// the stop at full force (rock-solid, nearly free), pinning the command at its limit where evolution can't move it.
-let STOP_W_PER_NM = 0;
-const cmdRange = s => [s.lo, s.hi + (KNEE_OVER && s.id.startsWith('knee') ? KNEE_OVER : 0)];
-// two-joint calf muscle (gastrocnemius): pushing off with the toes also pulls the knee into a bend, as in a real leg.
-// The fraction of the ankle's toes-down torque that also flexes the knee. 0 = off.
-let GASTRO = 0;
 let SCUFF_J_PER_M = 0;   // tested at 800: sliding fell only ~15% and it broke already-trained scooting agents, so off
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
 const groups = (member, filter) => (member << 16) | filter;
@@ -120,7 +113,7 @@ function mirrorSenses(inp, out) {
 /* ---------- one agent's body ---------- */
 class Biped {
   constructor(R, world, x0, opts = {}) {
-    this.R = R; this.world = world; this.x0 = x0; this.plan = BIPED;
+    this.R = R; this.world = world; this.x0 = x0; this.plan = BIPED; this.springy = !!opts.springy;
     this.parts = {}; this.joints = [];
     const filter = opts.collideWithBodies ? GROUP.GROUND | GROUP.OBJECT | GROUP.BODY : GROUP.GROUND | GROUP.OBJECT;
     const cg = groups(GROUP.BODY, filter);
@@ -139,9 +132,10 @@ class Biped {
       joint.setLimits(j.lo, j.hi);
       joint.configureMotorModel(R.MotorModel.ForceBased);
       joint.setMotorMaxForce(j.max);
-      joint.configureMotorPosition(j.rest, j.k, j.d);
+      const soft = this.springy && j.id.startsWith('knee'), k = soft ? SPRINGY_KNEE.k : j.k, d = soft ? SPRINGY_KNEE.d : j.d;
+      joint.configureMotorPosition(j.rest, k, d);
       joint.setContactsEnabled(false);
-      this.joints.push({ spec: j, joint, a: this.parts[j.a], b: this.parts[j.b], target: j.rest });
+      this.joints.push({ spec: j, joint, a: this.parts[j.a], b: this.parts[j.b], target: j.rest, k, d });
     }
     this.torso = this.parts.torso;
     this.hand = this.parts.foreR;           // the right hand is the one that grips
@@ -191,12 +185,11 @@ class Biped {
   act(actions, override) {
     for (let k = 0; k < this.joints.length; k++) {
       const j = this.joints[k], s = j.spec, u = Math.max(-1, Math.min(1, actions[k]));
-      const [lo, hi] = cmdRange(s);
-      let target = ACT_LINEAR ? (lo + hi) / 2 + u * (hi - lo) / 2
+      let target = this.springy ? (s.lo + s.hi) / 2 + u * (s.hi - s.lo) / 2
         : u >= 0 ? s.rest + u * (s.hi - s.rest) : s.rest + u * (s.rest - s.lo);
       if (override && override[s.id] !== undefined) target = override[s.id];   // testing: a joint you're moving
       j.target = target;
-      j.joint.configureMotorPosition(target, s.k, s.d);
+      j.joint.configureMotorPosition(target, j.k, j.d);
     }
   }
   /** Brain off: motors go slack (a little damping so it isn't a rag in a hurricane). */
@@ -216,13 +209,8 @@ class Biped {
     const low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));    // running on empty: crippling (agents learned to stand on empty)
     for (const j of this.joints) {
       const s = j.spec, rel = j.b.angvel() - j.a.angvel();
-      const torque = Math.max(-s.max, Math.min(s.max, s.k * (j.target - this.angle(j)) - s.d * rel));
+      const torque = Math.max(-s.max, Math.min(s.max, j.k * (j.target - this.angle(j)) - j.d * rel));
       const effort = Math.abs(torque) / s.max;
-      if (GASTRO && torque < 0 && s.id.startsWith('ankle')) {   // toes-down torque on the foot: the knee above gets bent too
-        const knee = this.joints[this.joints.indexOf(j) - 1], tq = GASTRO * Math.max(torque, -s.max * (j.strength || 1)) * DT;
-        knee.b.applyTorqueImpulse(tq, true); knee.a.applyTorqueImpulse(-tq, true);
-      }
-      if (STOP_W_PER_NM && j.target > s.hi) w += STOP_W_PER_NM * Math.min(s.max, s.k * (j.target - s.hi));
       w += HOLD_W_PER_NM * Math.abs(torque) + WORK_EFF * Math.abs(torque * rel);
       // effort cubed: walking-level effort (~0.5) barely tires (settles ~20%), hard sustained effort (tiptoe, ~0.9) wears out fast
       j.fatigue = Math.max(0, Math.min(1, j.fatigue + DT * (TIRE * effort * effort * effort - RECOVER * j.fatigue)));
@@ -302,13 +290,8 @@ function distToBox(p, body, hx, hy) {
    Sticks you trip over if you drag your feet, and logs you have to step over.
    The same obstacles are used for every brain in an attempt (fair), and they
    grow with the curriculum: none at first, small sticks, then logs.           */
-// Rough ground: small stones every 15-40 cm, up to 2 cm high (growing with the curriculum). Real ground is
-// never smooth; a stiff leg dragged along it catches and trips, which is why people bend the swinging knee.
-let ROUGH_GROUND = false;
-function makeTerrain(rng, level, rough) {
+function makeTerrain(rng, level) {
   const out = [];
-  if (ROUGH_GROUND && rough > 0.02) for (let x = 0.6 + rng() * 0.3; x < 22; x += 0.15 + rng() * 0.25)
-    out.push({ x, w: 0.02 + rng() * 0.02, h: 0.006 + rng() * 0.014 * rough, kind: 'pebble' });
   if (level <= 0.02) return out;
   for (let x = 1.5 + rng() * 0.8; x < 16; x += 1.5 + rng() * (2.5 - level)) {
     const log = level > 0.5 && rng() < (level - 0.5) * 0.7;
@@ -548,14 +531,14 @@ class Trial {
     this.gripOverride = opts.gripOverride === undefined ? null : opts.gripOverride;   // test mode: hand forced open (-1) or closed (1)
     this.brainOff = false;                           // test mode: motors slack, the body doesn't react
     this.symmetric = !!opts.symmetric;               // mirror-symmetric legs (see mirrorSenses)
+    this.springy = !!opts.springy;                   // springy knees (see SPRINGY_KNEE)
     this.mirrored = new Float32Array(SENSES); this.legOut = new Float32Array(3);
     this.earlyStop = opts.earlyStop !== undefined ? opts.earlyStop : !opts.keepSimulating;   // end hopeless attempts early (training)
     this.rng = Brain.makeRng(opts.seed || 1);
     this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.4 * (opts.push === undefined ? 1 : opts.push);
     this.terrainLevel = opts.terrainLevel === undefined ? this.hard : opts.terrainLevel;
-    this.roughness = opts.roughness === undefined ? this.terrainLevel : opts.roughness;   // stones arrive with the sticks and logs
-    this.terrain = opts.terrain || (this.task.terrain ? makeTerrain(this.rng, this.terrainLevel, this.roughness) : []);
+    this.terrain = opts.terrain || (this.task.terrain ? makeTerrain(this.rng, this.terrainLevel) : []);
     this.foodX = opts.foodX || 6 + 3.5 * this.hard + this.rng() * this.hard;   // walk: food gets farther with the curriculum (6 → 9.5-10.5 m)
     // energy gets scarce with the curriculum: 5x the store at first (learn to balance stiffly, like a toddler),
     // the real store at full difficulty (then only relaxed, efficient bodies last)
@@ -563,7 +546,7 @@ class Trial {
     this.agents = brains.map(params => {
       const world = makeWorld(R);
       if (this.terrain.length) placeTerrain(R, world, this.terrain);
-      const body = new Biped(R, world, 0, { terrain: this.terrain, energy: this.energy });
+      const body = new Biped(R, world, 0, { terrain: this.terrain, energy: this.energy, springy: this.springy });
       body.torso.setLinvel({ x: push, y: 0 }, true);
       const st = this.task.setup(R, world, 0, this.variant, this.hard, this);
       return { world, body, st, net: new Brain.Network(SIZES, params), done: false };
@@ -606,26 +589,14 @@ class Trial {
   free() { for (const a of this.agents) a.world.free(); this.agents = []; }
 }
 
-/** A brand-new random brain, set up so its commands start at the relaxed standing pose (with the even mapping,
-    a raw random brain would start in the middle of every joint's range: a deep crouch it can't stand up from). */
-function freshBrain(rng, opts = {}) {
-  const net = Brain.Network.random(SIZES, rng), inp = SIZES[0], hid = SIZES[1], start = hid * (inp + 1);
-  if (ACT_LINEAR) BIPED.joints.forEach((j, o) => {
-    const [lo, hi] = cmdRange(j), u = Math.max(-0.9, Math.min(0.9, (j.rest - (lo + hi) / 2) / ((hi - lo) / 2)));
+/** A new, untrained brain. With springy knees, each joint starts out holding the relaxed standing pose
+    (with the even command mapping, a plain random brain would start in a crouch). */
+function freshBrain(rng, springy) {
+  const net = Brain.Network.random(SIZES, rng), hid = SIZES[1], start = hid * (SIZES[0] + 1);
+  if (springy) BIPED.joints.forEach((j, o) => {
+    const u = Math.max(-0.9, Math.min(0.9, (j.rest - (j.lo + j.hi) / 2) / ((j.hi - j.lo) / 2)));
     net.params[start + o * (hid + 1) + hid] = Math.atanh(u);   // output bias
   });
-  // Stepping reflex (newborns have one): two hidden cells follow the 1 Hz clock, and each leg lifts and swings
-  // half a cycle after the other. Only a starting point; evolution keeps, reshapes or drops it.
-  if (opts.reflex) {
-    const a = opts.reflex, cell = (h, ci) => { const row = h * (inp + 1); for (let q = 0; q <= inp; q++) net.params[row + q] = 0; net.params[row + ci] = 2; };
-    cell(0, 32); cell(1, 33);                                                    // h0 ~ sin(clock), h1 ~ cos(clock)
-    const w = (out, h, v) => { net.params[start + out * (hid + 1) + h] = v; }, ji = id => BIPED.joints.findIndex(j => j.id === id);
-    for (const [side, sg] of [['L', 1], ['R', -1]]) {
-      for (let h = 0; h < 2; h++) { w(ji('knee' + side), h, 0); w(ji('hip' + side), h, 0); }
-      w(ji('knee' + side), 0, -1.0 * a * sg);                                    // knee folds while that leg swings
-      w(ji('hip' + side), 1, -0.35 * a * sg);                                    // hip swings forward a quarter cycle later
-    }
-  }
   return net.params;
 }
 
@@ -663,6 +634,7 @@ function episodeConfigs(taskId, generation, extra) {
     assist: taskId === 'grab' ? gripAssist(generation) : 0,
     terrainLevel: terrainLevel(generation),
     symmetric: !!(extra && extra.symmetric),
+    springy: !!(extra && extra.springy),
   });
   return out;
 }
@@ -682,9 +654,9 @@ function evaluate(R, taskId, population, generation, extra) {
   }));
 }
 
-const api = { DT, BIPED, SENSES, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
+const api = { DT, BIPED, SENSES, SPRINGY_KNEE, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
   makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; }, setRough: v => { ROUGH_GROUND = v; }, setLinear: v => { ACT_LINEAR = v; }, setKneeOver: v => { KNEE_OVER = v; }, setGastro: v => { GASTRO = v; }, setStopW: v => { STOP_W_PER_NM = v; } };
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 }
