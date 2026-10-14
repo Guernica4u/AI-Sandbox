@@ -56,6 +56,12 @@ shaped human walking, and adapt to them:
   wasteful gait runs out before it gets there.
 - **Feeling the feet.** Separate pressure senses under each heel and toe, and a
   human ankle range (toes down 43°, up 20°).
+- **Springy knees.** New brains get knee muscles that are softer than the hips
+  and ankles, like a real knee that hangs loose while the leg swings, and every
+  joint's command is spread evenly over its range. Before this, "straight" took
+  up half of the knee's command range, the brain learned to keep it pinned there,
+  and the knees never bent. Brains trained before keep the old stiff knees (the
+  page says so under the skill).
 
 Energy is in game joules (a fully tensed body burns ~10 kW, a relaxed one a few
 hundred watts); what matters is the *relative* cost of different movements.
