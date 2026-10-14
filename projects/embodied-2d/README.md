@@ -9,8 +9,8 @@ every motor's target angle. Nothing about walking or grabbing is scripted, and
 nothing copies a human.
 
 Open `index.html` directly (works from `file://`) or through GitHub Pages.
-The page opens on **Nova**, an untrained agent; **Kit, Juno and Pax** are
-trained examples.
+The page opens on **Nova**, an untrained agent; **Kit, Juno, Pax and Remy**
+are trained examples.
 
 ## Modes
 
@@ -93,15 +93,27 @@ Success check (10 fixed runs) at each skill's full difficulty:
 | Kit | 10/10 | 8/10 | 0/10 |
 | Juno | 5/10 | 6/10 | 0/10 |
 | Pax | 10/10 | 6/10 | 0/10 |
+| Remy (springy knees) | 10/10 | 9/10 at half the obstacles (1/10 with all of them) | 0/10 |
 
-The three walk brains come from one lineage, so they walk alike: a fast,
-stiff-kneed gait that alternates feet but slides them a lot. Grab on the
+Kit, Juno and Pax have the old stiff knees, and their walk brains come from one
+lineage, so they walk alike: a fast, stiff-legged gait that alternates feet but
+slides them a lot. Remy walks with springy knees: the swinging leg folds (about
+30° on average, up to 55°) like a person's, but slower, and it still trips on
+the bigger logs; it stopped improving when the logs got bigger. Grab on the
 movable table isn't mastered yet.
 
 **Tested and left off** (kept in the code as options): mirror-symmetric legs
 (one shared circuit for both legs) gave no better success or gait; a cost for
 dragging a foot cut sliding by only ~15% and broke agents already trained to
 scoot.
+
+**Tried for stiff knees and dropped:** springy knees alone still end up
+stiff-legged in most training runs (learning to stand first locks the knees
+straight, and walking inherits it). These didn't change that, or made walking
+worse: an energy cost for dragging a foot, small stones on the ground, a
+two-joint calf muscle (pushing off with the toes bends the knee), an energy cost
+for straining the knee into its stop, and a newborn-style stepping reflex in new
+brains.
 
 ## Files
 
@@ -110,7 +122,7 @@ scoot.
 | `brain.js` | Networks, evolution, brain file format. No physics, no page code. | **Yes, as-is.** |
 | `body2d.js` | Body plan table, muscles (energy and fatigue), Rapier 2D world, senses/motors, obstacles, tasks and scoring, reference movements, skill transfer | **Mostly.** Rapier 3D has the same API; shapes and joint axes change. Muscles, scoring, curriculum and anti-exploit rules carry over (the energy/fatigue model is also the stamina system for fighting). |
 | `index.html` | Watch / Train / Test UI, saving | Partly; the renderer becomes three.js. |
-| `starters.js` | Pretrained Kit, Juno and Pax (`window.EMBODIED_STARTERS`) | No: brains only fit the body they trained on. |
+| `starters.js` | Pretrained Kit, Juno, Pax and Remy (`window.EMBODIED_STARTERS`) | No: brains only fit the body they trained on. |
 | `vendor/rapier2d.js` | Rapier 2D 0.21.0 (Apache-2.0, see `vendor/LICENSE-rapier2d.txt`), bundled as a plain script so it works from `file://` | Swapped for Rapier 3D. |
 
 ## Things the agents taught us (now handled in the code)
