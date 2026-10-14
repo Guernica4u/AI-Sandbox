@@ -373,7 +373,7 @@ function stepWatch() {
   if (!t.finished) t.step();
   else if (!Watch.endAt) Watch.endAt = performance.now() + 1600;
   else if (performance.now() > Watch.endAt) startWatch();
-  else for (const a of t.agents) a.world.step();   // let it settle
+  else for (const a of t.agents) a.body.stepPhysics();   // let it settle
 }
 
 /* ================= success check: 10 runs → success rate ================= */
@@ -541,7 +541,7 @@ const Train = {
       View.camX = 0;
     }
     if (!this.demo.finished) this.demo.step();
-    else { if (!this.demoEnd) this.demoEnd = performance.now() + 1200; for (const ag of this.demo.agents) ag.world.step(); }
+    else { if (!this.demoEnd) this.demoEnd = performance.now() + 1200; for (const ag of this.demo.agents) ag.body.stepPhysics(); }
   },
   isShowing() { return this.running && this.agentId === App.agentId && this.skill === App.skill; },
 };

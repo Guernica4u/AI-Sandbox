@@ -138,6 +138,7 @@ class Biped {
       this.joints.push({ spec: j, joint, a: this.parts[j.a], b: this.parts[j.b], target: j.rest, k, d });
     }
     this.torso = this.parts.torso;
+    this.partList = Object.values(this.parts); this.prevX = new Float64Array(this.partList.length);
     this.hand = this.parts.foreR;           // the right hand is the one that grips
     this.grip = null;                       // fixed joint while holding something
     this.fallen = false;
@@ -190,6 +191,26 @@ class Biped {
       if (override && override[s.id] !== undefined) target = override[s.id];   // testing: a joint you're moving
       j.target = target;
       j.joint.configureMotorPosition(target, j.k, j.d);
+    }
+  }
+  /** One physics step, with ground grip. Rapier fixes small joint errors by moving bodies directly, and that fix-up
+      ignores friction: planted feet slid along the floor on their heels (5-30 cm a second), and a body lying still
+      crept along at ~3 cm/s, even with 10x the friction. So after each step, every part gripping the ground (its
+      friction below the slipping limit) keeps only the sideways motion its own velocity explains. */
+  stepPhysics() {
+    const w = this.world, g = w.groundCollider, parts = this.partList;
+    for (let i = 0; i < parts.length; i++) this.prevX[i] = parts[i].translation().x;
+    w.step();
+    if (!g) return;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i]; let n = 0, t = 0, mu = 0;
+      for (let c = 0; c < p.numColliders(); c++) {
+        const col = p.collider(c);
+        w.contactPair(col, g, m => { for (let k = 0; k < m.numContacts(); k++) { const ni = m.contactImpulse(k); n += ni; t += m.contactTangentImpulse(k); mu += ni * 0.5 * (col.friction() + g.friction()); } });
+      }
+      if (!(n > 0) || Math.abs(t) > 0.9 * mu) continue;               // not touching, or really slipping
+      const extra = p.translation().x - this.prevX[i] - p.linvel().x * DT;
+      if (extra > 1e-7 || extra < -1e-7) { const q = p.translation(); p.setTranslation({ x: q.x - extra, y: q.y }, true); }
     }
   }
   /** Brain off: motors go slack (a little damping so it isn't a rag in a hurricane). */
@@ -274,7 +295,7 @@ function makeWorld(R) {
   world.timestep = DT;
   world.numSolverIterations = 6;
   const ground = world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(0, -0.5));
-  world.createCollider(R.ColliderDesc.cuboid(5000, 0.5).setFriction(1.0).setCollisionGroups(groups(GROUP.GROUND, 0xffff)), ground);
+  world.groundCollider = world.createCollider(R.ColliderDesc.cuboid(5000, 0.5).setFriction(1.0).setCollisionGroups(groups(GROUP.GROUND, 0xffff)), ground);
   return world;
 }
 
@@ -556,7 +577,7 @@ class Trial {
   step() {
     const rng = this.rng, inp = this.input;
     for (const a of this.agents) {
-      if (a.done) { if (this.keepSimulating) a.world.step(); continue; }
+      if (a.done) { if (this.keepSimulating) a.body.stepPhysics(); continue; }
       a.body.sense(inp, this.time, this.task.senseTask(a.st, a.body));
       if (this.noise) for (let i = 0; i < inp.length; i++) inp[i] += (rng() - 0.5) * 2 * this.noise;
       let out;
@@ -570,7 +591,7 @@ class Trial {
       if (this.brainOff) a.body.relax(); else a.body.act(out, this.override);
       this.task.step(a.st, a.body, out, this);
       a.body.wristReflex();
-      a.world.step();
+      a.body.stepPhysics();
       a.body.muscles();
       if (a.body.checkFallen()) { a.done = true; a.fitness = this.score(a); a.success = false; }
       else if (this.task.done && this.task.done(a.st, a.body)) { a.done = true; a.fitness = this.score(a); a.success = true; }
