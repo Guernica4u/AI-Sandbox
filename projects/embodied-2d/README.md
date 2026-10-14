@@ -91,9 +91,12 @@ Success check (10 fixed runs) at each skill's full difficulty:
 | Agent | Stand | Walk to food (~10 m, obstacles, limited energy) | Pick up the glass (movable table) |
 |---|---|---|---|
 | Kit | 10/10 | 8/10 | 0/10 |
-| Juno | 5/10 | 6/10 | 0/10 |
-| Pax | 10/10 | 6/10 | 0/10 |
-| Remy (springy knees) | 10/10 | 9/10 at half the obstacles (1/10 with all of them) | 0/10 |
+| Juno | 10/10 | 7/10 | 3/10 |
+| Pax | 9/10 | 5/10 | 0/10 |
+| Remy (springy knees) | 8/10 | 10/10 at half the obstacles (1/10 with all of them) | 0/10 |
+
+(Measured after the ground-grip fix below; Juno, Pax and Remy's Stand brains were
+re-tuned for it, since Pax had learned to stand by using the fake sliding.)
 
 Kit, Juno and Pax have the old stiff knees, and their walk brains come from one
 lineage, so they walk alike: a fast, stiff-legged gait that alternates feet but
@@ -124,6 +127,18 @@ brains.
 | `index.html` | Watch / Train / Test UI, saving | Partly; the renderer becomes three.js. |
 | `starters.js` | Pretrained Kit, Juno, Pax and Remy (`window.EMBODIED_STARTERS`) | No: brains only fit the body they trained on. |
 | `vendor/rapier2d.js` | Rapier 2D 0.21.0 (Apache-2.0, see `vendor/LICENSE-rapier2d.txt`), bundled as a plain script so it works from `file://` | Swapped for Rapier 3D. |
+
+## Ground grip (a physics fix)
+
+Feet used to slide along the floor on their heels, both walking and standing.
+That wasn't the agents: Rapier fixes small joint errors by moving bodies
+directly, and that fix-up ignores friction, so a planted foot (or a body lying
+perfectly still) crept along the ground, a few cm a second, even with 10x the
+friction. Now, after every physics step, any body part gripping the ground (its
+friction below the slipping limit) keeps only the sideways motion its own
+velocity explains (`Biped.stepPhysics`). A body lying still creeps 0.27 cm/s
+instead of 2.9, and walking feet slide a third as much. Real slipping (pushing
+harder than friction allows) still happens.
 
 ## Things the agents taught us (now handled in the code)
 
