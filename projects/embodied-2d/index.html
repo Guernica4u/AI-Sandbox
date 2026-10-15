@@ -3,9 +3,10 @@
 ================================================================================
  GLASS BOX · EMBODIED 2D  -  works from file:// and on GitHub Pages
 ================================================================================
- Agents with physical bodies (10 motorised joints + a hand) learn to stand,
- walk and pick up a glass of water by neuroevolution. Nothing is scripted:
- every movement you see is a small neural network driving the motors.
+ Agents with physical bodies (10 joints moved by 20 realistic muscles, and a
+ hand) learn to stand, walk, jump and pick up a glass of water by
+ neuroevolution. Nothing is scripted: every movement you see is a small neural
+ network telling the muscles how hard to work.
 
  Modes
    Watch   see an agent try its skill; success check over 10 runs
@@ -15,13 +16,16 @@
            "ideal" movement on the real body (for comparison only, never trained on).
            Nothing here ever changes a brain or a training run.
 
- Realism: muscles cost energy even when holding still, tire with sustained
- effort, and every attempt has a limited energy store (Walk: food far away).
+ Realism: MuJoCo physics; muscle pairs with human strength, switch-on delay,
+ force-length/velocity and springy tendons (muscle.js); muscles cost energy
+ even when holding still, tire with sustained effort, and every attempt has a
+ limited energy store (Walk: food far away).
 
  Files
-   vendor/rapier2d.js  Rapier 2D physics (Apache-2.0), bundled as a plain script
+   vendor/mujoco.js    MuJoCo physics (Apache-2.0, Google DeepMind), bundled as a plain script
    brain.js            networks + evolution + brain file format (engine-agnostic, reused for 3D)
-   body2d.js           the body, muscles (energy/fatigue), the world, obstacles, tasks
+   muscle.js           realistic muscles (engine-agnostic, reused for 3D)
+   body2d.js           the body, energy/fatigue, the MuJoCo world, obstacles, tasks
    starters.js         pretrained example agents (Kit, Juno, Pax)
    index.html          this page
 
@@ -208,7 +212,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
     </section>
 
     <section class="panel">
-      <div class="head"><span class="label" id="jointsTitle">Joints · angle (white), motor target (orange), effort</span></div>
+      <div class="head"><span class="label" id="jointsTitle">Joints · angle (white), steering target (orange), muscle effort</span></div>
       <div class="body"><div class="joints" id="joints"></div></div>
     </section>
   </div>
@@ -228,11 +232,11 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
     <section class="panel">
       <div class="head"><span class="label">How this works</span></div>
       <div class="body about">
-        <p>Each body has <b>10 motorised joints</b> (both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, pressure under heels and toes, the ground ahead, its energy and tiredness, where the goal is) and sets a target for every motor.</p>
+        <p>Each body has <b>10 joints, each moved by a pair of muscles</b> (one bends it, one straightens it; both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, pressure under heels and toes, the ground ahead, its energy and tiredness, where the goal is) and sets a target for every motor.</p>
         <p><b>Nobody programs the movements</b>, and nothing copies a human: the ideal movement in Test is only there to compare. Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, food farther away, sticks and logs, and the grip assist fades away.</p>
-        <p><b>Muscles are realistic-ish:</b> pushing costs energy even when holding still, sustained effort tires a joint, and every attempt has a limited energy store. In Walk the food is far away, so a wasteful way of walking runs out before it gets there.</p>
+        <p><b>Muscles are realistic:</b> human strength (a knee straightens twice as hard as it bends), about 10 ms to switch on, weaker the faster they contract, and springy tendons that store energy. Physics is MuJoCo. Muscles cost energy even when holding still, sustained effort tires them, and every attempt has a limited energy store. In Walk the food is far away, so a wasteful way of walking runs out before it gets there.</p>
         <p><b>Test</b> lets you move the limbs and see how the agent reacts. Switch the brain off to see the body go limp, or play the ideal movement: it takes over the body and moves every joint the way a person would, under the same physics, so you can see what the real body does with it. Nothing there affects learning.</p>
-        <p>New agents start knowing nothing. <b>Kit, Juno and Pax</b> are trained examples.</p>
+        <p>New agents start knowing nothing. The trained examples (Kit, Juno, Pax, Remy) are being retrained for the new muscle body.</p>
       </div>
     </section>
   </div>
@@ -249,8 +253,9 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 </dialog>
 <div id="toast"></div>
 
-<script src="vendor/rapier2d.js"></script>
+<script src="vendor/mujoco.js"></script>
 <script src="brain.js"></script>
+<script src="muscle.js"></script>
 <script src="body2d.js"></script>
 <script src="starters.js"></script>
 <script>
@@ -273,7 +278,7 @@ const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'
 const NAMES = ['Nova', 'Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Echo', 'Tarn', 'Vale'];
 
 /* ================= agents & storage ================= */
-const LS_KEY = 'glassbox-embodied2d/v3';
+const LS_KEY = 'glassbox-embodied2d/v4m';   // v4m: MuJoCo + muscle body (older agents don't fit it)
 const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false };
 const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -315,7 +320,7 @@ function saveAll() {
 }
 function starterAgents(offset) {
   const st = window.EMBODIED_STARTERS || {};
-  return Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i + offset));
+  return Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i + offset)).filter(a => Object.keys(a.skills).length);   // only examples trained for this body
 }
 function loadAll() {
   let d = null;
@@ -417,11 +422,11 @@ function __trainerWorker() {
   let ready = null;
   self.onmessage = async e => {
     const m = e.data;
-    if (!ready) ready = RAPIER.init();
+    if (!ready) ready = loadMujocoClassic().then(mj => { self.MJ = mj; });
     await ready;
     if (m.type !== 'run') return;
     const genomes = m.genomes.map(g => new Float32Array(g));
-    const scores = m.configs.map(cfg => { const t = new Body2D.Trial(RAPIER, m.taskId, genomes, cfg), sc = t.run(); t.free(); return sc; });
+    const scores = m.configs.map(cfg => { const t = new Body2D.Trial(self.MJ, m.taskId, genomes, cfg), sc = t.run(); t.free(); return sc; });
     self.postMessage({ type: 'done', id: m.id, scores });
   };
 }
@@ -430,9 +435,9 @@ const Pool = {
   /** Start the workers (once). Built from the page's own scripts, so it works from file:// and on a website. */
   ensure() {
     if (this.workers) return true;
-    if (this.failed || typeof Worker === 'undefined' || typeof __rapierFactory !== 'function') return false;
+    if (this.failed || typeof Worker === 'undefined' || typeof __mujocoFactory !== 'function') return false;
     try {
-      const src = `var RAPIER = (${__rapierFactory.toString()})();\n(${__brainModule.toString()})(self);\n(${__body2dModule.toString()})(self);\n(${__trainerWorker.toString()})();`;
+      const src = `var __MUJOCO_WASM_B64 = ${JSON.stringify(__MUJOCO_WASM_B64)};\n${__mujocoFactory.toString()}\n${loadMujocoClassic.toString()}\n(${__brainModule.toString()})(self);\n(${__muscleModule.toString()})(self);\n(${__body2dModule.toString()})(self);\n(${__trainerWorker.toString()})();`;
       const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
       const n = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));   // one per core (the page itself only replays the best brain)
       this.workers = Array.from({ length: n }, () => {
@@ -566,7 +571,6 @@ const Probe = {
       { seed: 4242, variant: 0, push: 0, noise: 0, terrain: [], foodX: 8, override: this.override, keepSimulating: true }));
     this.trial.maxSteps = Infinity;
     this.trial.hard = 0;                       // no automatic shoves while you test
-    if (!full) this.world().numSolverIterations = 24;   // stiffer joint limits while you pull on limbs (the ideal gets the same physics as training)
     this.trial.gripOverride = this.grip;
     this.trial.brainOff = !this.brainOn;
     this.tilt = 0;
@@ -576,17 +580,11 @@ const Probe = {
   },
   stopTrial() { if (this.trial) { this.trial.free(); this.trial = null; } this.harness = null; this.drag = null; },
   body() { return this.trial && this.trial.agents[0].body; },
-  world() { return this.trial && this.trial.agents[0].world; },
   setHarness(on) {
-    const w = this.world(), b = this.body();
-    if (!w) return;
-    if (this.harness) { w.removeImpulseJoint(this.harness.joint, true); w.removeRigidBody(this.harness.anchor); this.harness = null; }
-    if (!on) return;
-    const t = b.torso.translation();
-    const anchor = w.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(t.x, 1.21));
-    const joint = w.createImpulseJoint(R.JointData.fixed({ x: 0, y: 0 }, this.tilt, { x: 0, y: 0 }, 0), anchor, b.torso, true);
-    this.harness = { anchor, joint };
-    b.fallen = false;
+    const b = this.body();
+    if (!b) return;
+    b.setHarness(on, this.tilt);   // a strong spring holding the hips up, at the torso tilt you set
+    this.harness = on ? b.harness : null;
   },
   setTilt(v) { this.tilt = v; if (this.harness) this.setHarness(true); },
   /** Pointer pressed at world point p: grab the nearest body part. */
@@ -742,7 +740,7 @@ function drawWorld() {
   }
   // test mode: harness and drag line
   if (App.mode === 'test') {
-    if (Probe.harness) { const p = Probe.harness.anchor.translation(); ctx.strokeStyle = 'rgba(232,230,225,.35)'; ctx.setLineDash([4 * d, 4 * d]); ctx.lineWidth = d; ctx.beginPath(); ctx.moveTo(X(p.x), 0); ctx.lineTo(X(p.x), Y(p.y)); ctx.stroke(); ctx.setLineDash([]); }
+    if (Probe.harness) { const p = Probe.harness; ctx.strokeStyle = 'rgba(232,230,225,.35)'; ctx.setLineDash([4 * d, 4 * d]); ctx.lineWidth = d; ctx.beginPath(); ctx.moveTo(X(p.x), 0); ctx.lineTo(X(p.x), Y(p.y)); ctx.stroke(); ctx.setLineDash([]); }
     const dr = Probe.drag;
     if (dr && dr.point) { ctx.strokeStyle = css('--signal'); ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.moveTo(X(dr.point.x), Y(dr.point.y)); ctx.lineTo(X(dr.target.x), Y(dr.target.y)); ctx.stroke(); ctx.fillStyle = css('--signal'); ctx.beginPath(); ctx.arc(X(dr.target.x), Y(dr.target.y), 4 * d, 0, 7); ctx.fill(); }
   }
@@ -843,11 +841,11 @@ function drawBody(ctx, body, d, alpha, detail) {
   }
   ctx.globalAlpha = 1;
 }
-/** How hard a joint's motor is pushing, -1..1 of its strength (approximate: the spring part of the motor). */
-function effort(body, j) { const s = j.spec; return Math.max(-1, Math.min(1, (s.k * (j.target - body.angle(j))) / s.max)); }
+/** How hard a joint's muscles are pushing it, -1..1 of their strength that way. */
+function effort(body, j) { return j.effort || 0; }
 
 /* ================= side panels ================= */
-const OUT_NAMES = BIPED.joints.map(j => j.id).concat('grip');
+const OUT_NAMES = BIPED.joints.flatMap(j => [`${j.id} −`, `${j.id} +`]).concat('grip');   // each joint's muscle pair: pulls the angle down / up
 function drawBrain() {
   const { a: lead } = shown();
   const c = $('#brainCanvas'), { ctx, w, h, d } = fit(c);
@@ -876,7 +874,7 @@ function drawBrain() {
     if (k === L.length - 1) { ctx.fillStyle = '#8a8f98'; ctx.fillText(`${OUT_NAMES[i]} ${v >= 0 ? '+' : ''}${v.toFixed(2)}`, x + 9 * d, y + 3 * d); }
   }));
   ctx.fillStyle = '#5a5f68';
-  ctx.fillText('SENSES', 6 * d, h - 3 * d); ctx.fillText('HIDDEN', xs[1] - 18 * d, h - 3 * d); ctx.fillText('MOTORS', xs[2] - 18 * d, h - 3 * d);
+  ctx.fillText('SENSES', 6 * d, h - 3 * d); ctx.fillText('HIDDEN', xs[1] - 18 * d, h - 3 * d); ctx.fillText('MUSCLES', xs[2] - 18 * d, h - 3 * d);
   $('#brainInfo').textContent = `${L.join('-')} · ${P.length} weights`;
 }
 
@@ -961,7 +959,6 @@ function renderStatus() {
   }
   let note = SKILL_NOTES[App.skill];
   if (!s) note += App.skill !== 'stand' && a.skills.stand ? ' <br><span class="warn">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="warn">Not trained yet: this brain is random, so the body just collapses. Train it!</span>';
-  else if (!brainFor(a, App.skill).springy) note += ' <br><span class="knees">Old stiff knees: this brain learned before springy knees, so it keeps them. Brains started from scratch get springy knees.</span>';
   $('#skillNote').innerHTML = note;
 }
 function renderOutcome() {
@@ -1091,8 +1088,8 @@ function refreshTabsLight() { const b = $(`#skillTabs button[data-skill="${Train
 
 loadAll();
 wire();
-RAPIER.init().then(() => {
-  R = RAPIER;
+loadMujocoClassic().then(mj => {
+  R = mj;
   $('#loading').remove();
   select({});
   buildJoints();
@@ -1100,7 +1097,7 @@ RAPIER.init().then(() => {
   setInterval(saveAll, 4000);
   window.addEventListener('beforeunload', saveAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAll(); });
-}).catch(err => { $('#loading').textContent = 'Physics failed to load: ' + err.message; });
+}).catch(err => { console.error(err); const l = $('#loading'); if (l) l.textContent = 'Physics failed to load: ' + err.message; else toast('Something went wrong starting up: ' + err.message, 8000); });
 </script>
 </body>
 </html>

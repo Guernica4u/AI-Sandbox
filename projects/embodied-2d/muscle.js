@@ -10,12 +10,14 @@
    - activation delay: ~10 ms to switch on, ~40 ms to relax
    - force-length: strongest near its ideal length, weak when very short/long
    - force-velocity: weaker the faster it shortens, up to 1.4x when stretched
+   - a little fibre damping (keeps it smooth when lightly activated)
    - passive stretch: resists being pulled far past its ideal length
    - springy tendon in series: stores and returns energy (long Achilles)
 
  Strengths are human data for a ~62 kg adult, per direction (a knee straightens
- with 200 N·m but bends with 100). Speeds come from human joint top speeds,
- scaled by SPEED so a squat jump rises ~30 cm, like a person's.
+ with 200 N·m but bends with 100). Speeds are calibrated so each joint's top
+ speed matches a person's (knee ~23 rad/s); a crude all-muscles-at-once squat
+ jump then rises ~24 cm (a person's best squat jump is ~30 cm).
  The engine only receives the joint torque: moment arm x tendon force.
 
  Model: Hill-type muscle-tendon unit (Thelen 2003 style). Units: m, N, s.
@@ -27,13 +29,22 @@ function __muscleModule(root) {   // a named function so the page can pass its s
 const TAU_ACT = 0.010, TAU_DEACT = 0.040;   // activation / deactivation time constants (s)
 const FMAX_ECC = 1.4, AF = 0.25;            // force-velocity: max force when lengthening, curve shape
 const GAMMA = 0.45, KPE = 4, E0 = 0.6;      // force-length width; passive stretch shape and strain at F0
+const BETA = 0.1;                           // fibre damping (Millard 2013): real fibres resist fast length changes a little
 const fl = l => Math.exp(-((l - 1) * (l - 1)) / GAMMA);                                  // active force vs fibre length (in l0)
 const fpe = l => l <= 1 ? 0 : (Math.exp(KPE * (l - 1) / E0) - 1) / (Math.exp(KPE) - 1);  // passive stretch
-/** Fibre speed (in vmax units, + = lengthening) that produces force ratio f: the Hill curve, inverted. */
-function fvInv(f) {
-  if (f <= 1) return (f - 1) / (1 + f / AF);                                             // shortening
-  const fe = Math.min(f, FMAX_ECC - 0.01);
-  return (fe - 1) * (1 + 1 / AF) / (FMAX_ECC - fe) * 0.25;                               // lengthening
+/** Force-velocity: force ratio at fibre speed v (in vmax units, + = lengthening). Hill's curve when shortening;
+    up to FMAX_ECC when stretched. */
+function fv(v) {
+  if (v <= 0) return (1 + v) / (1 - v / AF);
+  return 1 + (FMAX_ECC - 1) * v / (v + 0.18);
+}
+/** The fibre speed at which the muscle's force (active + passive + damping) balances the tendon force ft (all / F0).
+    Damping makes this always solvable; without it, a lightly activated muscle jerks at full speed whenever its
+    tendon goes slack and tight again, and the joints chatter. Solved by bisection (the balance rises with speed). */
+function fibreSpeed(a, flv, fp, ft) {
+  let lo = -1, hi = 1;
+  for (let k = 0; k < 14; k++) { const v = (lo + hi) / 2; if (a * flv * fv(v) + fp + BETA * v > ft) hi = v; else lo = v; }
+  return (lo + hi) / 2;
 }
 
 /** One muscle-tendon unit acting on one joint. */
@@ -55,7 +66,7 @@ class MTU {
     const a = Math.max(0.01, this.a), lt = this.mtLength(theta) - this.lm;
     const ft = lt > this.ls ? (lt - this.ls) / (this.ls * this.strain) : 0;             // tendon force / F0
     const ln = this.lm / this.l0;
-    const v = fvInv(Math.max(0, (ft - fpe(ln)) / (a * Math.max(0.05, fl(ln))))) * this.vmax * this.l0;   // fibre speed that balances the tendon
+    const v = fibreSpeed(a, fl(ln), fpe(ln), ft) * this.vmax * this.l0;                // fibre speed that balances the tendon
     this.lm = Math.max(0.3 * this.l0, Math.min(1.8 * this.l0, this.lm + v * dt));
     this.force = ft * this.F0;
     return this.dir * this.arm * this.force;
@@ -74,7 +85,8 @@ const MUSCLES = {
 };
 const RANGE = { hip: [-0.6, 1.9], knee: [-2.3, 0], ankle: [-0.75, 0.35], shoulder: [-1, 3], elbow: [0, 2.5] };
 const TOPSPEED = { hip: 15, knee: 20, ankle: 20, shoulder: 20, elbow: 25 };   // human joint top speeds (rad/s)
-const SPEED = 1.4;          // calibration: squat jump ~30 cm (1.25x → 25 cm, 1.5x → 34 cm)
+const SPEED = 2.0;          // calibration: the model's joints then reach human top speeds (knee ~23, hip ~19, ankle ~15 rad/s
+                            // unloaded); fibre damping and the tendons make the effective speed lower than the fibre vmax
 const EXCURSION = 0.35;     // a full joint sweep keeps fibres within ±35% of ideal length (real fibres are pennate)
 
 /** Muscles for a list of joint ids ('hipL', 'kneeR', ...): [down, up] per joint, so muscle 2i pulls joint i's angle

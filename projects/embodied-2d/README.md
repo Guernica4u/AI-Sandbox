@@ -1,16 +1,20 @@
 # Embodied 2D
 
 Agents with physical bodies learn motor skills by themselves. Each body is a
-1.7 m, ~64 kg humanoid seen from the side, with 10 motorised joints (hips,
-knees, ankles, shoulders, elbows; left and right are separate), human-shaped
-feet (heel behind the ankle) and a right hand that can close. A small neural
-network (49 senses → 32 hidden → 11 motors) runs 60 times a second and sets
-every motor's target angle. Nothing about walking, jumping or grabbing is scripted, and
-nothing copies a human.
+1.7 m, ~62 kg humanoid seen from the side, with 10 joints (hips, knees,
+ankles, shoulders, elbows; left and right are separate), human-shaped feet
+(heel behind the ankle) and a right hand that can close. Every joint is moved
+by **a pair of realistic muscles**, one bending it and one straightening it.
+A small neural network (49 senses → 32 hidden → 21 outputs) runs 60 times a
+second and sets how hard each of the 20 muscles works, plus the grip. Nothing
+about walking, jumping or grabbing is scripted, and nothing copies a human.
 
 Open `index.html` directly (works from `file://`) or through GitHub Pages.
-The page opens on **Nova**, an untrained agent; **Kit, Juno, Pax and Remy**
-are trained examples.
+
+> **Status (branch `mujoco-switch`):** the physics moved from Rapier to MuJoCo
+> with realistic muscles. Brains only fit the body they trained on, so the old
+> examples (Kit, Juno, Pax, Remy) don't work on this body and are being
+> retrained. Until then the page opens on **Nova**, an untrained agent.
 
 ## Modes
 
@@ -18,53 +22,59 @@ are trained examples.
 |---|---|
 | **Watch** | The agent tries its skill. *Success check* runs 10 attempts. Click near the body to shove it. |
 | **Train** | 48 variations per generation, in the background (you can keep watching or testing). |
-| **Test** | Move the limbs yourself (drag any part, or hold a slider; let go and the brain takes over) and see how the agent reacts. *Brain off* makes the body go limp. *Play ideal movement* takes over the body and moves every joint through a reference human movement for the skill, under the same physics (muscles, gravity, balance), so you can see what the real body does with it; it's for comparison only and never trained on. Nothing here changes any brain or training run. |
+| **Test** | Move the limbs yourself (drag any part, or hold a slider; let go and the brain takes over) and see how the agent reacts. *Brain off* makes the body go limp. *Play ideal movement* resets the body and lets a hand-made reference movement steer every joint through its muscles, under the same physics; it's for comparison only and never trained on. Nothing here changes any brain or training run. |
 
-## Training speed
+## Physics: MuJoCo
 
-- **All CPU cores:** by default, training runs in background workers, one per
-  spare CPU core, each scoring part of the 48 variations. The workers are built
-  from the page's own scripts (`__rapierFactory`, `__brainModule`,
-  `__body2dModule`), so this works from `file://` as well as on a website. If a
-  browser can't start workers, training falls back to running on the page.
-- **Keeps going in the background:** the worker loop doesn't depend on the
-  screen redrawing, so training continues when the tab is hidden or the window
-  is minimised (the tab title shows the generation). While training, the stage
-  replays the best brain so far.
-- **Measured:** about 6× faster than training on the page, on a 4-core machine
-  (more cores, more speed-up). Training continued at full speed with screen
-  redraws stopped (what a hidden tab does).
-- **Hopeless attempts end early:** a walker stuck for 4 s or out of energy, or a
-  spilled glass, stops being simulated and is scored as if it had stood still
-  until the end, so the ranking doesn't change.
-- *Real time (watch every try)* and *On this page only* still run the old way.
+The world runs on [MuJoCo](https://github.com/google-deepmind/mujoco) (Google
+DeepMind, Apache-2.0), the engine most research on learned movement uses. The
+body is one jointed chain, so joints can't drift apart and planted feet don't
+slide (Rapier needed a "ground grip" patch for that, and its light feet
+jittered). The world is planar: forward/back, up/down and tipping, nothing
+sideways. Physics runs 8 small steps per brain step (480 Hz); 240 Hz brings
+back joint chatter.
 
-## Realism: why they walk the way they do
+`vendor/mujoco.js` is the official MuJoCo JavaScript package packed into one
+plain script with the WebAssembly inside (14.6 MB), so it loads from `file://`
+and in training workers. `tools/make-mujoco-classic.js` rebuilds it from the
+npm package `@mujoco/mujoco`.
 
-Instead of rewarding a human-looking walk, the agents get the problems that
-shaped human walking, and adapt to them:
+## Muscles (muscle.js)
 
-- **Muscles cost energy even when holding still.** Every motor burns energy in
-  proportion to how hard it pushes, plus the work it does, plus a resting cost.
-  Tiptoeing (calf always working) costs about 4× standing flat-footed; holding a
-  leg up behind you costs more than putting it down.
-- **Muscles get tired.** Sustained effort fatigues a joint and makes it weaker;
-  rest recovers it. A tiptoe calf wears out within seconds.
+Engine-independent, so they carry over to 3D. Each muscle (a Hill-type
+muscle-tendon unit, Thelen 2003 / Millard 2013 style) has:
+
+- **Human strength, per direction**, for a ~62 kg adult: hip 220 N·m back /
+  150 forward, knee 200 straightening / 100 bending, ankle 150 toes-down / 40
+  toes-up, shoulder 60/60, elbow 55 bending / 40 straightening.
+- **Switch-on delay:** ~10 ms to tense, ~40 ms to relax.
+- **Force-length:** strongest near its ideal length, weak when very short or
+  long (the calf is weak with the toes already pointed).
+- **Force-velocity:** weaker the faster it shortens, up to 1.4× when stretched.
+- **Springy tendons** that store and return energy (a long, stretchy Achilles).
+- **A little fibre damping**, which keeps a lightly tensed muscle from
+  chattering (without it, elbows and ankles shook at up to 50 rad/s).
+
+Speeds are calibrated to people: each joint's top speed under full effort is
+human (knee ~23, hip ~19, ankle ~15 rad/s). A crude jump with every leg muscle
+fully on at once rises ~24 cm (a person's best squat jump is ~30 cm; real
+jumpers fire hips, knees and ankles in sequence).
+
+## Realism: why they move the way they do
+
+Instead of rewarding a human-looking movement, the agents get the problems that
+shaped human movement, and adapt to them:
+
+- **Muscles cost energy even when holding still**, in proportion to their size
+  and how hard they're switched on, plus the work they do (~25% efficient), plus
+  a resting cost. Tensing everything burns ~9 kW (game joules); relaxed, a few
+  hundred watts.
+- **Muscles get tired** with sustained effort and recover with rest.
 - **Energy is limited.** Every attempt starts with an energy store. Running out
   is crippling (10% strength). Energy left at the end adds to the score.
-- **Food is far away.** Walk is *Walk to food*: the food is 6–10 m away, and a
-  wasteful gait runs out before it gets there.
-- **Feeling the feet.** Separate pressure senses under each heel and toe, and a
-  human ankle range (toes down 43°, up 20°).
-- **Springy knees.** New brains get knee muscles that are softer than the hips
-  and ankles, like a real knee that hangs loose while the leg swings, and every
-  joint's command is spread evenly over its range. Before this, "straight" took
-  up half of the knee's command range, the brain learned to keep it pinned there,
-  and the knees never bent. Brains trained before keep the old stiff knees (the
-  page says so under the skill).
-
-Energy is in game joules (a fully tensed body burns ~10 kW, a relaxed one a few
-hundred watts); what matters is the *relative* cost of different movements.
+- **Food is far away** (Walk: 6–10 m), so a wasteful gait runs out first.
+- **Feeling the feet:** pressure senses under each heel and toe, and a human
+  ankle range (toes down 43°, up 20°).
 
 ## Skills
 
@@ -79,109 +89,65 @@ Walk, Jump and Pick up the glass start from the agent's Stand brain.
 
 **Curriculum** (gets harder as the agent improves): shoves, sensor noise and
 energy scarcity reach full strength at generation 150 (energy starts at 5× the
-store, so agents first learn to balance stiffly, like a toddler, and then to
-relax); the food moves from 6 m to 9.5–10.5 m; obstacles creep in from generation
-60 to 400 (sticks up to 3.5 cm you trip over if you drag your feet, logs up to
-9 cm you step over); the grip assist (the hand closes on touch) fades from
-100% to 0% by generation 200; the fruit rises from 1.98 m to 2.30 m by generation 150.
-
-### Jump: muscles that are weaker when fast
-
-Jump turns on **muscle speed**: like real muscle, a joint pushes less hard the
-faster it is already moving in that direction (Hill's force-velocity curve,
-`FV_VMAX` in `body2d.js`); braking keeps full strength. Without it the motors
-push just as hard at any speed, and a crude scripted crouch-and-spring threw
-the body ~70 cm up (a typical adult jumps ~40 cm). With it the same jump rises
-~28 cm, and a learned jump with an arm swing should come close to a person's.
-It's on for Jump only, so Stand, Walk, Grab and every existing brain behave
-exactly as before; it can be switched on everywhere when the examples are next
-retrained. Jump also allows a deeper crouch before it counts as a fall (hips
-down to 80 cm instead of 98).
+store); the food moves from 6 m to 9.5–10.5 m; obstacles creep in from
+generation 60 to 400 (sticks up to 3.5 cm, logs up to 9 cm); the grip assist
+(the hand closes on touch) fades from 100% to 0% by generation 200; the fruit
+rises from 1.98 m to 2.30 m by generation 150. Jump allows a deeper crouch
+before it counts as a fall (hips down to 80 cm instead of 98).
 
 ## The ideal: is a skill possible at all?
 
-Before training on a skill, check that the best human-style movement can do it
-with this body and physics. If the ideal can't, no amount of training will.
-*Play ideal movement* (Test mode) resets the body and lets the reference
-movement drive it at full difficulty, free-standing, with the same physics as
-training. Replayed joint angles alone always topple (nobody stands by holding a
-fixed pose), so the ideal gets simple reflexes: the ankles keep the centre of
-mass over the feet, the hips keep the torso at the tilt the movement asks for,
-in the air the legs swing under the body to land, and for Jump the arms aim at
-the fruit (`idealPose` in `body2d.js`). It's for comparison only and never
-trained on. In Node, `Body2D.idealCheck(RAPIER, skill)` runs it on all three
-variants.
+*Play ideal movement* lets a hand-made reference movement steer the joints
+through their muscles, with simple reflexes (ankles keep the centre of mass
+over the feet, hips keep the torso upright, legs swing under the body before
+landing, arms aim at the fruit). In Node, `Body2D.idealCheck(mj, skill)` runs
+it on all three variants.
 
-| Skill | Ideal at full difficulty |
+Honest status: on realistic muscles these hand-made controllers don't do the
+skills yet (they did on Rapier's stiff motors, which could snap any joint to
+any angle instantly). Separate tests showed the body itself can: it stands
+quietly, and with each muscle group fired fully in sequence it reaches 2.44 m,
+high enough for the fruit; landing that jump reliably by hand failed. Balancing
+real muscles by hand is hard (it's why toddlers fall over), so the agents
+learning it themselves is the real check.
+
+## Physics test kit
+
+`node projects/embodied-2d/tests/physics-kit.js` (about a minute) scores the
+engine before anything is retrained. Current results:
+
+| Check | Result |
 |---|---|
-| Stand | stands, but falls on the full-strength backward shove: there's only 5 cm of heel behind the ankle, so a person would step back. Needs a stepping reflex. |
-| Walk to food | falls at once: walking needs a real balance controller (where to put the next foot), not replayed poses. |
-| Jump for fruit | **works**: touches the fruit at 2.30 m in all three positions and lands. The movement (crouch, timing, arm swing, landing) was found by searching for what succeeds; it's sensitive to how it starts (a small nudge before the jump often makes it fail). |
-| Pick up the glass | **works** in all three positions (lifts it ~50 cm). |
+| Muscle strength vs human data | PASS (0.2% off) |
+| Planted foot under sideways force: slip | PASS (0.00 cm/s) |
+| Lying limp: creep / joints moving on average | PASS (0.01 cm/s / ~0.1 rad/s) |
+| Lying limp: brief twitches (worst moment) | info: ~1–2 rad/s at a light part resting on the ground or a joint limit (known minor issue) |
+| Held in a harness, steady tone: shaking | PASS (0.05 rad/s; was 16 on Rapier) |
+| Squat jump, muscles alone | PASS (~24 cm) |
+| Repeatability | PASS |
+| Speed: one body, one simulated second | FAIL (~31 ms; the mark is 20). Fine for 2D training on all cores; needs work before 3D crowds. |
 
-**Known engine problem (for the engine review):** with 6 solver passes per
-step, a light foot under a heavy body jitters (it flips ~20° and back several
-times a second) when the ankle holds it mid-range; the ground-grip fix makes it
-worse. 12 passes removes it (~25% slower training), but the trained examples
-lose skill (Pax stand 9 → 2/10), because they learned to hide the jitter by
-pushing the ankle against its joint stop. The ideal (which holds the ankle
-mid-range) shows it as visible shaking.
+On Rapier the same kind of kit gave 7 pass, 5 fail, with feet shaking at
+16 rad/s, walking feet sliding 17 cm/s, and superhuman jumps (63 cm).
 
-## Where the example agents stand (body v3)
+## Training speed
 
-Success check (10 fixed runs) at each skill's full difficulty:
+- **All CPU cores:** training runs in background workers, one per CPU core,
+  each scoring part of the 48 variations. The workers are built from the page's
+  own scripts (`__mujocoFactory`, `__brainModule`, `__muscleModule`,
+  `__body2dModule`), so this works from `file://` as well as on a website.
+  Measured: 16 workers, ~0.4 s per generation early in training.
+- **Keeps going in the background:** training continues when the tab is hidden
+  or the window is minimised.
+- **Hopeless attempts end early:** a walker stuck for 4 s or out of energy, or a
+  spilled glass, stops being simulated and is scored as if it had stood still.
 
-| Agent | Stand | Walk to food (~10 m, obstacles, limited energy) | Pick up the glass (movable table) |
-|---|---|---|---|
-| Kit | 10/10 | 8/10 | 0/10 |
-| Juno | 10/10 | 7/10 | 3/10 |
-| Pax | 9/10 | 5/10 | 0/10 |
-| Remy (springy knees) | 8/10 | 10/10 at half the obstacles (1/10 with all of them) | 0/10 |
+## Training outside the browser
 
-(Measured after the ground-grip fix below; Juno, Pax and Remy's Stand brains were
-re-tuned for it, since Pax had learned to stand by using the fake sliding.)
-
-Kit, Juno and Pax have the old stiff knees, and their walk brains come from one
-lineage, so they walk alike: a fast, stiff-legged gait that alternates feet but
-slides them a lot. Remy walks with springy knees: the swinging leg folds (about
-30° on average, up to 55°) like a person's, but slower, and it still trips on
-the bigger logs; it stopped improving when the logs got bigger. Grab on the
-movable table isn't mastered yet.
-
-**Tested and left off** (kept in the code as options): mirror-symmetric legs
-(one shared circuit for both legs) gave no better success or gait; a cost for
-dragging a foot cut sliding by only ~15% and broke agents already trained to
-scoot.
-
-**Tried for stiff knees and dropped:** springy knees alone still end up
-stiff-legged in most training runs (learning to stand first locks the knees
-straight, and walking inherits it). These didn't change that, or made walking
-worse: an energy cost for dragging a foot, small stones on the ground, a
-two-joint calf muscle (pushing off with the toes bends the knee), an energy cost
-for straining the knee into its stop, and a newborn-style stepping reflex in new
-brains.
-
-## Files
-
-| File | What it is | Reused in 3D? |
-|---|---|---|
-| `brain.js` | Networks, evolution, brain file format. No physics, no page code. | **Yes, as-is.** |
-| `body2d.js` | Body plan table, muscles (energy and fatigue), Rapier 2D world, senses/motors, obstacles, tasks and scoring, reference movements, skill transfer | **Mostly.** Rapier 3D has the same API; shapes and joint axes change. Muscles, scoring, curriculum and anti-exploit rules carry over (the energy/fatigue model is also the stamina system for fighting). |
-| `index.html` | Watch / Train / Test UI, saving | Partly; the renderer becomes three.js. |
-| `starters.js` | Pretrained Kit, Juno, Pax and Remy (`window.EMBODIED_STARTERS`) | No: brains only fit the body they trained on. |
-| `vendor/rapier2d.js` | Rapier 2D 0.21.0 (Apache-2.0, see `vendor/LICENSE-rapier2d.txt`), bundled as a plain script so it works from `file://` | Swapped for Rapier 3D. |
-
-## Ground grip (a physics fix)
-
-Feet used to slide along the floor on their heels, both walking and standing.
-That wasn't the agents: Rapier fixes small joint errors by moving bodies
-directly, and that fix-up ignores friction, so a planted foot (or a body lying
-perfectly still) crept along the ground, a few cm a second, even with 10x the
-friction. Now, after every physics step, any body part gripping the ground (its
-friction below the slipping limit) keeps only the sideways motion its own
-velocity explains (`Biped.stepPhysics`). A body lying still creeps 0.27 cm/s
-instead of 2.9, and walking feet slide a third as much. Real slipping (pushing
-harder than friction allows) still happens.
+`node projects/embodied-2d/tools/train.js <skill> <generations> <brain.json> [seed] [from-brain.json]`
+trains with the same code as the page (one CPU core), saves every 10
+generations and continues where it left off. `tools/node-env.js` loads MuJoCo,
+the muscles and the body in Node for any script.
 
 ## Things the agents taught us (now handled in the code)
 
@@ -197,27 +163,26 @@ harder than friction allows) still happens.
   and even gripped *through*. The table is now free-standing (it slides and
   tips), and touching the glass from under the table doesn't count.
 - **Balance breaks when the arms learn.** Half the mutations only touch one
-  limb group's outputs (legs, or arms and hand).
+  limb group's outputs (leg muscles, or arm muscles and hand).
 - **A new sense makes an old brain flail.** Starting a new skill cuts
   connections from senses the old skill never used (`transferBrain`), and
-  loosens the arms before learning to grab.
+  relaxes the arms before learning to grab or jump.
 - **Lucky runs** looked like skill. Every brain is tested on the same 2–3
   episodes with random shoves, and inconsistent brains score lower.
+- **Agents learn physics glitches.** On Rapier, Nova walked by using a sliding
+  bug, and Kit and Pax hid a foot jitter by pushing their ankles into the joint
+  stop. Physics fixes then broke them. That's why there's now a test kit.
 
-## Physics test kit
+## Files
 
-`node projects/embodied-2d/tests/physics-kit.js` scores the engine in about a
-minute: ankle shake and creep while standing, creep lying limp, planted-foot
-slide while walking, jump height with and without muscle speed, repeatability,
-the ideal check for every skill, and training speed. Every engine change is
-judged by it before anything is retrained. Baseline (Rapier 2D, 6 solver
-passes, ground-grip fix): 7 pass, 5 fail. The fails are ankle shake (16 rad/s),
-walking foot slide (17 cm/s), superhuman jumps outside Jump (63 cm), and the
-ideal Stand (hardest shove) and Walk.
-
-## Training outside the browser
-
-`body2d.js` and `brain.js` also load in Node (`module.exports`). Load
-`vendor/rapier2d.js`, call `RAPIER.init()`, then loop
-`evolution.tell(Body2D.evaluate(RAPIER, 'walk', evolution.population, evolution.generation))`.
-That's how `starters.js` was made.
+| File | What it is | Reused in 3D? |
+|---|---|---|
+| `brain.js` | Networks, evolution, brain file format. No physics, no page code. | **Yes, as-is.** |
+| `muscle.js` | Realistic muscles (no physics engine inside) | **Yes, as-is.** |
+| `body2d.js` | Body plan, the MuJoCo world (as MJCF), senses, muscle outputs, energy and fatigue, obstacles, tasks and scoring, reference movements, skill transfer | **Mostly:** MuJoCo is 3D already; the body plan and joint axes change. |
+| `index.html` | Watch / Train / Test UI, saving | Partly; the renderer becomes three.js. |
+| `starters.js` | Pretrained agents (`window.EMBODIED_STARTERS`); the current ones fit the old body and are hidden | No: brains only fit the body they trained on. |
+| `vendor/mujoco.js` | MuJoCo 3.16.0 (Apache-2.0, see `vendor/LICENSE-mujoco.txt`) as one plain script | Yes. |
+| `vendor/rapier2d.js` | The old engine (Rapier 2D 0.21.0), no longer loaded | No. |
+| `tests/physics-kit.js` | The physics test kit | Yes (ported). |
+| `tools/` | `train.js` (Node training), `node-env.js` (loads everything in Node), `make-mujoco-classic.js` (rebuilds the MuJoCo bundle) | Yes. |
