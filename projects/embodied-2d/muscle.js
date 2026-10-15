@@ -42,9 +42,18 @@ function fv(v) {
     Damping makes this always solvable; without it, a lightly activated muscle jerks at full speed whenever its
     tendon goes slack and tight again, and the joints chatter. Solved by bisection (the balance rises with speed). */
 function fibreSpeed(a, flv, fp, ft) {
-  let lo = -1, hi = 1;
-  for (let k = 0; k < 14; k++) { const v = (lo + hi) / 2; if (a * flv * fv(v) + fp + BETA * v > ft) hi = v; else lo = v; }
-  return (lo + hi) / 2;
+  // A·fv(v) + BETA·v + c = 0 with A = a·fl, c = passive − tendon. Both halves of fv are ratios of straight lines, so
+  // multiplying out gives a quadratic: solved directly (it used to take 14 rounds of guessing, per muscle, per step).
+  const A = a * flv, c = fp - ft, E = 0.18, K = FMAX_ECC - 1;
+  if (A + c >= 0) {   // the muscle out-pulls the tendon: it shortens (v <= 0), fv = (1 + v) / (1 - v/AF)
+    const qa = -BETA / AF, qb = A + BETA - c / AF, qc = A + c;      // qa v² + qb v + qc = 0, root in [-1, 0]
+    const v = (-qb + Math.sqrt(Math.max(0, qb * qb - 4 * qa * qc))) / (2 * qa);
+    return v < -1 ? -1 : v > 0 ? 0 : v;
+  }
+  // the tendon out-pulls the muscle: it's stretched (v > 0), fv = 1 + K·v / (v + E)
+  const qa = BETA, qb = A + A * K + c + BETA * E, qc = (A + c) * E; // qa v² + qb v + qc = 0, root in (0, 1]
+  const v = (-qb + Math.sqrt(Math.max(0, qb * qb - 4 * qa * qc))) / (2 * qa);
+  return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
 /** One muscle-tendon unit acting on one joint. */
@@ -107,7 +116,7 @@ function makeMuscles(jointIds, { speed = SPEED, excursion = EXCURSION } = {}) {
   });
 }
 
-const api = { MTU, MUSCLES, RANGE, TOPSPEED, SPEED, makeMuscles, TAU_ACT, TAU_DEACT };
+const api = { MTU, MUSCLES, RANGE, TOPSPEED, SPEED, makeMuscles, TAU_ACT, TAU_DEACT, fv, fibreSpeed, BETA };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Muscle = api;
 }

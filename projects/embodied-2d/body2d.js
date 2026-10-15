@@ -31,7 +31,7 @@ function __body2dModule(root) {   // a named function so the page can pass its s
 const Muscle = root.Muscle || (typeof require === 'function' ? require('./muscle.js') : null);
 
 const DT = 1 / 60;            // one brain step
-const SUB = 8, H = DT / SUB;  // physics sub-steps per brain step (480 Hz; 240 Hz brings back joint chatter)
+const SUB = 6, H = DT / SUB;  // physics sub-steps per brain step (360 Hz; 240 Hz brings back joint chatter, 480 Hz costs a third more)
 // energy (see Biped.muscles): resting watts; holding cost per (peak force × fibre length) per second of full activation;
 // metabolic cost of positive work (muscle is ~25% efficient); how fast sustained activation tires a muscle; recovery
 const BASAL_W = 70, MAINT = 1.2, WORK_COST = 4, TIRE = 0.08, RECOVER = 0.05;
@@ -180,17 +180,17 @@ ${grip ? '<equality><connect name="grip" body1="foreR" body2="glass" anchor="0 0
 /** A body part as the page and the tasks see it: position, rotation, velocity, mass, and pushes. */
 class Part {
   constructor(body, id, spec) { this.body = body; this.id = id; this.spec = spec; }
-  translation() { const p = this.body.data.xpos; return { x: p[3 * this.id], y: p[3 * this.id + 2] }; }
-  rotation() { const m = this.body.data.xmat; return Math.atan2(-m[9 * this.id + 2], m[9 * this.id + 8]); }
+  translation() { const p = this.body.views().xpos; return { x: p[3 * this.id], y: p[3 * this.id + 2] }; }
+  rotation() { const m = this.body.views().xmat; return Math.atan2(-m[9 * this.id + 2], m[9 * this.id + 8]); }
   linvel() { const v = this.body.vel; return { x: v[3 * this.id], y: v[3 * this.id + 1] }; }
   angvel() { return this.body.vel[3 * this.id + 2]; }
-  mass() { return this.body.model.body_mass[this.id]; }
+  mass() { return this.body.views().body_mass[this.id]; }
   /** An impulse (N·s), spread over the next brain step. */
   applyImpulse(imp) { this.applyImpulseAtPoint(imp, null); }
   applyImpulseAtPoint(imp, point) {
     const f = this.body.pending, k = 3 * this.id, fx = imp.x / DT, fy = imp.y / DT;
     f[k] += fx; f[k + 1] += fy;
-    if (point) { const c = this.body.data.xipos, rx = point.x - c[3 * this.id], ry = point.y - c[3 * this.id + 2]; f[k + 2] += rx * fy - ry * fx; }
+    if (point) { const c = this.body.views().xipos, rx = point.x - c[3 * this.id], ry = point.y - c[3 * this.id + 2]; f[k + 2] += rx * fy - ry * fx; }
   }
 }
 
@@ -207,7 +207,7 @@ class Biped {
     this.torso = this.parts[BIPED.root];                            // the pelvis: the body's root (position, harness)
     this.chest = this.parts.chest; this.head = this.parts.head;
     this.hand = this.parts.foreR;                                   // the right hand is the one that grips
-    this.vel = new Float64Array(3 * model.nbody); this.prev = new Float64Array(3 * model.nbody);
+    this.nbody = model.nbody; this.vel = new Float64Array(3 * this.nbody); this.prev = new Float64Array(3 * this.nbody);
     this.pending = new Float64Array(3 * model.nbody);              // pushes (fx, fy, torque) for the next brain step
     const jid = n => mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT.value, n);
     this.joints = BIPED.joints.map((spec, i) => ({ spec, i, q: model.jnt_qposadr[jid(spec.id)], dq: model.jnt_dofadr[jid(spec.id)], a: this.parts[spec.a], b: this.parts[spec.b], target: spec.rest, fatigue: 0, effort: 0 }));
@@ -229,8 +229,18 @@ class Biped {
     for (let k = 0; k < 400; k++) for (let m = 0; m < NM; m++) this.mus[m].step(0.1, data.qpos[this.jq[m >> 1]], 1 / 400);
     this.savePositions();
   }
-  savePositions() { const p = this.data.xpos; for (let b = 0; b < this.model.nbody; b++) { this.prev[3 * b] = p[3 * b]; this.prev[3 * b + 1] = p[3 * b + 2]; this.prev[3 * b + 2] = this.rot(b); } }
-  rot(b) { const m = this.data.xmat; return Math.atan2(-m[9 * b + 2], m[9 * b + 8]); }
+  /** The engine's state as typed arrays. Reading data.qpos etc. builds a new view of MuJoCo's memory every time
+      (~1.7 µs each, thousands per step: most of the time went there), so they're kept, and rebuilt only when MuJoCo's
+      memory has grown (which empties old views). */
+  views() {
+    const v = this._v;
+    if (v && v.qpos.length) return v;
+    const d = this.data, m = this.model;
+    return this._v = { qpos: d.qpos, qvel: d.qvel, qfrc_applied: d.qfrc_applied, xfrc_applied: d.xfrc_applied, xpos: d.xpos, xmat: d.xmat, xipos: d.xipos,
+      eq_active: d.eq_active, body_mass: m.body_mass, dof_damping: m.dof_damping, eq_data: m.eq_data, jnt_dofadr: m.jnt_dofadr, body_jntadr: m.body_jntadr };
+  }
+  savePositions() { const p = this.views().xpos; for (let b = 0; b < this.nbody; b++) { this.prev[3 * b] = p[3 * b]; this.prev[3 * b + 1] = p[3 * b + 2]; this.prev[3 * b + 2] = this.rot(b); } }
+  rot(b) { const m = this.views().xmat; return Math.atan2(-m[9 * b + 2], m[9 * b + 8]); }
   groundAt(x) { return this.terrain ? terrainHeight(this.terrain, x) : 0; }
   footClear(id) { const f = this.parts[id].translation(); return f.y - 0.03 - this.groundAt(f.x); }
   /** Height above the ground of a sole point: footEnd('footL', -1) heel, +1 ball; footEnd('toesL', +1) toe tip. */
@@ -247,8 +257,8 @@ class Biped {
     return { x: t.x + lx * Math.cos(a) - ly * Math.sin(a), y: t.y + lx * Math.sin(a) + ly * Math.cos(a) };
   }
   tiredness(group) { let s = 0, n = 0; for (const j of this.joints) if (group === 'legs' ? /hip|knee|ankle/.test(j.spec.id) : /shoulder|elbow/.test(j.spec.id)) { s += j.fatigue; n++; } return s / n; }
-  angle(j) { return this.data.qpos[j.q]; }
-  speed(j) { return this.data.qvel[j.dq]; }
+  angle(j) { return this.views().qpos[j.q]; }
+  speed(j) { return this.views().qvel[j.dq]; }
   /** Torso position relative to where this body started. */
   pos() { const t = this.torso.translation(); return { x: t.x - this.x0, y: t.y }; }
   headY() { return this.head.translation().y; }
@@ -256,12 +266,12 @@ class Biped {
   lean() { const p = this.torso.translation(), h = this.head.translation(); return Math.atan2(-(h.x - p.x), h.y - p.y); }
   handPos(fore) { const f = fore || this.hand, t = f.translation(), a = f.rotation(); return { x: t.x + Math.sin(a) * 0.16, y: t.y - Math.cos(a) * 0.16 }; }
   /** Centre of mass of the whole body and its forward speed. */
-  com() { let m = 0, x = 0, vx = 0; for (const p of this.partList) { const k = p.mass(); m += k; x += k * this.data.xipos[3 * p.id]; vx += k * this.vel[3 * p.id]; } return { x: x / m, vx: vx / m }; }
+  com() { let m = 0, x = 0, vx = 0; for (const p of this.partList) { const k = p.mass(); m += k; x += k * this.views().xipos[3 * p.id]; vx += k * this.vel[3 * p.id]; } return { x: x / m, vx: vx / m }; }
 
   /** Fills out[] with what the body senses (see SENSES). task = { dx, dy, a } extra inputs from the task. */
   /** What the body reports right now (see SENSES), before any nerve delay. task = { dx, dy, a } from the task. */
   senseNow(out, time, task) {
-    const q = this.data.qpos, a = this.head.rotation(), hv = this.head.linvel();
+    const q = this.views().qpos, a = this.head.rotation(), hv = this.head.linvel();
     const acc = this.prevHeadVel ? { x: (hv.x - this.prevHeadVel.x) / DT, y: (hv.y - this.prevHeadVel.y) / DT } : { x: 0, y: 0 };
     this.prevHeadVel = hv;
     let i = 0;
@@ -319,35 +329,35 @@ class Biped {
       drive[k] = clamp01(drive[k] + REFLEX.gain * stretch * (1 - opposite));
     }
     this.frame++;
-    const tor = this.torso.id, xf = d.xfrc_applied, qf = d.qfrc_applied, P = this.pending;
-    if (this.gripAnchor) { const e = m.eq_data; for (let k = 0; k < 6; k++) e[k] = this.gripAnchor[k]; }   // this body's grip point (the model is shared)
-    if (d.eq_active && d.eq_active.length) d.eq_active[0] = this.grip ? 1 : 0;
-    const glass = this.held ? this.objects.glass : null, gdof = glass ? m.jnt_dofadr[m.body_jntadr[glass.id]] + 2 : -1;
+    const V = this.views(), tor = this.torso.id, xf = V.xfrc_applied, qf = V.qfrc_applied, qpos = V.qpos, qvel = V.qvel, P = this.pending, nb = this.nbody;
+    if (this.gripAnchor) { const e = V.eq_data; for (let k = 0; k < 6; k++) e[k] = this.gripAnchor[k]; }   // this body's grip point (the model is shared)
+    if (V.eq_active && V.eq_active.length) V.eq_active[0] = this.grip ? 1 : 0;
+    const glass = this.held ? this.objects.glass : null, gdof = glass ? V.jnt_dofadr[V.body_jntadr[glass.id]] + 2 : -1;
     // the harness's brake as damping on the pelvis's own joints: MuJoCo applies joint damping implicitly, so it stays
     // stable on a light pelvis (as a plain force it overshot and flung the legs). The model is shared, so set it per body.
     const hb = this.harness ? (this.harness.tiltOnly ? [0, 0, 300] : [2000, 2000, 300]) : [0, 0, 0];
-    for (let k = 0; k < 3; k++) m.dof_damping[k] = hb[k];
+    for (let k = 0; k < 3; k++) V.dof_damping[k] = hb[k];
     for (let n = 0; n < SUB; n++) {
       for (let i = 0; i < NJ; i++) {
-        const q = d.qpos[this.jq[i]]; let tq = 0;
+        const q = qpos[this.jq[i]]; let tq = 0;
         for (let s = 0; s < 2; s++) { const k = 2 * i + s, t = this.mus[k].step(drive[k] * (1 - 0.6 * this.mfat[k]) * low, q, H); this.mtq[k] = t; tq += t; }
         qf[this.jdq[i]] = tq;
       }
-      for (let b = 1; b < m.nbody; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 2] = P[3 * b + 1]; xf[6 * b + 4] = -P[3 * b + 2]; }
+      for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 2] = P[3 * b + 1]; xf[6 * b + 4] = -P[3 * b + 2]; }
       if (this.harness) {   // test mode: a strong spring holds the hips in place and the pelvis at a tilt (its brake is set below)
-        const h = this.harness, tx = d.xpos[3 * tor], ty = d.xpos[3 * tor + 2];
+        const h = this.harness, tx = V.xpos[3 * tor], ty = V.xpos[3 * tor + 2];
         if (!h.tiltOnly) { xf[6 * tor] += 30000 * (h.x - tx); xf[6 * tor + 2] += 30000 * (h.y - ty); }
-        xf[6 * tor + 4] += -(3000 * (h.tilt - d.qpos[2]));
+        xf[6 * tor + 4] += -(3000 * (h.tilt - qpos[2]));
       }
       if (gdof >= 0) {   // automatic wrist: gently keeps a held glass level (limited strength, so rough moves still spill)
-        const a = wrap(glass.rotation()); qf[gdof] = Math.max(-0.25, Math.min(0.25, -0.6 * a - 0.04 * d.qvel[gdof]));
+        const a = wrap(glass.rotation()); qf[gdof] = Math.max(-0.25, Math.min(0.25, -0.6 * a - 0.04 * qvel[gdof]));
       }
       mj.mj_step(m, d);
     }
     if (gdof >= 0) qf[gdof] = 0;
     P.fill(0);
-    const p = d.xpos;
-    for (let b = 0; b < m.nbody; b++) {
+    const p = V.xpos;
+    for (let b = 0; b < nb; b++) {
       const r = this.rot(b);
       this.vel[3 * b] = (p[3 * b] - this.prev[3 * b]) / DT; this.vel[3 * b + 1] = (p[3 * b + 2] - this.prev[3 * b + 1]) / DT; this.vel[3 * b + 2] = wrap(r - this.prev[3 * b + 2]) / DT;
     }
@@ -362,7 +372,7 @@ class Biped {
   muscles() {
     let w = BASAL_W;
     for (let k = 0; k < NM; k++) {
-      const mu = this.mus[k], a = mu.a, om = this.data.qvel[this.jdq[k >> 1]];
+      const mu = this.mus[k], a = mu.a, om = this.views().qvel[this.jdq[k >> 1]];
       w += a * mu.F0 * mu.l0 * MAINT + Math.max(0, this.mtq[k] * om) * WORK_COST;
       this.mfat[k] = Math.max(0, Math.min(1, this.mfat[k] + DT * (TIRE * a * a * a - RECOVER * this.mfat[k])));   // effort cubed: hard sustained effort wears out fast
     }
@@ -384,7 +394,7 @@ class Biped {
     return this.fallen;
   }
   /** Give the whole body a forward speed (the small random push at the start of an attempt). */
-  push(vx) { this.data.qvel[0] += vx * 0.45; }
+  push(vx) { this.views().qvel[0] += vx * 0.45; }
   /** Test mode: hold the hips up (or let go). tiltOnly: only keep the torso upright, free to move (the test kit's jump). */
   setHarness(on, tilt = 0, tiltOnly = false) { const t = this.torso.translation(); this.harness = on ? { x: t.x, y: ROOT_Y + 0.01, tilt, tiltOnly } : null; if (on) this.fallen = false; }
   /** Close the hand on obj: a hinge at the point where the hand touches it.
@@ -401,7 +411,7 @@ class Biped {
     this.grip = true; this.held = obj; this.gripAt = ly / hy;     // -1 = bottom of the object, +1 = top
   }
   wristReflex() {}   // part of stepPhysics now (it runs every sub-step)
-  release() { this.grip = false; this.held = null; this.gripAnchor = null; if (this.data.eq_active && this.data.eq_active.length) this.data.eq_active[0] = 0; }
+  release() { this.grip = false; this.held = null; this.gripAnchor = null; const ea = this.views().eq_active; if (ea && ea.length) ea[0] = 0; }
   freeze() {}        // a finished body is simply no longer stepped
 }
 
@@ -531,7 +541,7 @@ function idealPose(skill, body, t, st) {
     for (const s of ['L', 'R']) pose['hip' + s] = Math.max(leg, Math.min(pose['hip' + s], leg + 0.6));
   } else {
     const feet = (body.parts.footL.translation().x + body.parts.footR.translation().x) / 2;
-    const ankle = g.ax * (c.x - feet) + g.av * c.vx, hip = g.hx * (body.lean() - pose.torso) + g.hv * body.data.qvel[2];
+    const ankle = g.ax * (c.x - feet) + g.av * c.vx, hip = g.hx * (body.lean() - pose.torso) + g.hv * body.views().qvel[2];
     for (const s of ['L', 'R']) { pose['ankle' + s] -= ankle; pose['hip' + s] += hip; }
   }
   return pose;
