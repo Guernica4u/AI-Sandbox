@@ -32,6 +32,11 @@ const BASAL_W = 70, HOLD_W_PER_NM = 0.3, WORK_EFF = 1.3, TIRE = 0.08, RECOVER = 
    2. Softer knee muscles (stiffness 1000 instead of 3500), like a real knee that hangs loose while the leg swings.
    With both, some agents learn to fold the swinging leg; a stiff-legged walk is still what many end up with.   */
 const SPRINGY_KNEE = { k: 1000, d: 26 };
+/* Muscle speed (a body option, on for Jump): real muscle is weaker the faster it shortens (Hill's force-velocity
+   curve), which is what limits how high people jump. Without it a joint pushes just as hard at any speed, and a
+   crude crouch-and-spring sent the body ~70 cm up (people manage ~40). Strength while shortening at joint speed v:
+   (1 - v/FV_VMAX) / (1 + v/(FV_CURVE * FV_VMAX)); lengthening (braking) keeps full strength.                  */
+const FV_VMAX = 30, FV_CURVE = 0.5;   // rad/s at which a joint can't push any more; curve shape (a scripted jump: ~28 cm)
 // dragging a foot along the ground (skin and friction): energy per metre slid while the foot touches the ground
 let SCUFF_J_PER_M = 0;   // tested at 800: sliding fell only ~15% and it broke already-trained scooting agents, so off
 const GROUP = { GROUND: 0x0001, BODY: 0x0002, OBJECT: 0x0004 };
@@ -114,6 +119,8 @@ function mirrorSenses(inp, out) {
 class Biped {
   constructor(R, world, x0, opts = {}) {
     this.R = R; this.world = world; this.x0 = x0; this.plan = BIPED; this.springy = !!opts.springy;
+    this.muscleSpeed = !!opts.muscleSpeed;  // see FV_VMAX
+    this.hipsLow = opts.hipsLow || 0.98;    // hips below this = fallen (Jump allows a deeper crouch)
     this.parts = {}; this.joints = [];
     const filter = opts.collideWithBodies ? GROUP.GROUND | GROUP.OBJECT | GROUP.BODY : GROUP.GROUND | GROUP.OBJECT;
     const cg = groups(GROUP.BODY, filter);
@@ -162,7 +169,7 @@ class Biped {
   /** Torso position relative to where this body started. */
   pos() { const t = this.torso.translation(); return { x: t.x - this.x0, y: t.y }; }
   headY() { const t = this.torso.translation(), a = this.torso.rotation(); return t.y + Math.cos(a) * 0.40; }
-  handPos() { const f = this.hand, t = f.translation(), a = f.rotation(); return { x: t.x + Math.sin(a) * 0.16, y: t.y - Math.cos(a) * 0.16 }; }
+  handPos(fore) { const f = fore || this.hand, t = f.translation(), a = f.rotation(); return { x: t.x + Math.sin(a) * 0.16, y: t.y - Math.cos(a) * 0.16 }; }
 
   /** Fills out[] with what the body senses (see SENSES). task = { dx, dy, a, b } extra inputs from the task. */
   sense(out, time, task) {
@@ -235,7 +242,8 @@ class Biped {
       w += HOLD_W_PER_NM * Math.abs(torque) + WORK_EFF * Math.abs(torque * rel);
       // effort cubed: walking-level effort (~0.5) barely tires (settles ~20%), hard sustained effort (tiptoe, ~0.9) wears out fast
       j.fatigue = Math.max(0, Math.min(1, j.fatigue + DT * (TIRE * effort * effort * effort - RECOVER * j.fatigue)));
-      const strength = (1 - 0.6 * j.fatigue) * low;
+      let strength = (1 - 0.6 * j.fatigue) * low;
+      if (this.muscleSpeed && torque * rel > 0) { const v = Math.min(1, Math.abs(rel) / FV_VMAX); strength *= Math.max(0.02, (1 - v) / (1 + v / FV_CURVE)); }
       if (Math.abs(strength - (j.strength || 1)) > 0.01) { j.strength = strength; j.joint.setMotorMaxForce(s.max * strength); }
     }
     if (SCUFF_J_PER_M) for (const id of ['footL', 'footR']) if (this.footEnd(id, -1) < 0.012 || this.footEnd(id, 1) < 0.012) w += SCUFF_J_PER_M * Math.abs(this.parts[id].linvel().x);
@@ -247,7 +255,7 @@ class Biped {
     // fallen = head low, torso tipped over, or hips down low. Agents found two cheap ways to "stand":
     // sitting down, and dropping into the splits. Both count as fallen now.
     const g = this.groundAt(this.torso.translation().x);
-    if (!this.fallen && (this.headY() - g < 1.15 || this.torso.translation().y - g < 0.98 || Math.abs(wrap(this.torso.rotation())) > 1.3)) this.fallen = true;
+    if (!this.fallen && (this.headY() - g < 1.15 || this.torso.translation().y - g < this.hipsLow || Math.abs(wrap(this.torso.rotation())) > 1.3)) this.fallen = true;
     return this.fallen;
   }
   /** Stop simulating this body (used for fallen agents during training, saves time). */
@@ -336,7 +344,7 @@ function placeTerrain(R, world, terrain) {
   }
 }
 
-/* ---------- reference movements: what a person would do (shown as a ghost, never trained on) ----------
+/* ---------- reference movements: what a person would do (played on the body in Test mode, never trained on) ----------
    A clip is keyframed joint angles: { name, skill, loop, period, keys: [{ t, pose, grip }] }
    pose = { torso: world tilt, hipL: angle, ... } (missing joints = relaxed pose).          */
 const POSE_KEYS = ['torso'].concat(BIPED.joints.map(j => j.id));
@@ -360,9 +368,25 @@ function walkReference() {
   }
   return { id: 'ref-walk', name: 'Reference walk', skill: 'walk', loop: true, period: 1, keys };
 }
+/** Both legs and both arms alike: (torso tilt, hip, knee, ankle, shoulder, elbow). */
+const JUMP_POSE = (torso, hip, knee, ankle, shoulder, elbow) => ({ torso, hipL: hip, hipR: hip, kneeL: knee, kneeR: knee, ankleL: ankle, ankleR: ankle, shoulderL: shoulder, shoulderR: shoulder, elbowL: elbow, elbowR: elbow });
 const REFERENCE = {
   stand: { id: 'ref-stand', name: 'Reference stance', skill: 'stand', loop: true, period: 1, keys: [{ t: 0, grip: 0, pose: Object.assign({}, REST_POSE) }] },
   walk: walkReference(),
+  // Found by searching for the movement that does the task at full difficulty (fruit at its highest, all three
+  // positions) with this body and muscle speed: crouch deep with the arms swung back, spring up as the arms swing
+  // overhead, reach for the fruit, bring the legs under you and land with bent knees.
+  jump: { id: 'ref-jump', name: 'Reference jump', skill: 'jump', loop: false, period: 2.12,
+    balance: { ax: 2.05, av: 0.28, hx: 2.58, land: -0.04 },
+    aim: { from: 0.7, target: st => st.pickedAt === null ? { x: st.fx, y: st.fy } : null },   // reach for the fruit until it's picked
+    keys: [
+      { t: 0, grip: 0, pose: {} },
+      { t: 0.49, grip: 0, pose: JUMP_POSE(-0.92, 1.7, -0.88, -0.33, -0.98, 0.2) },     // crouch, arms back
+      { t: 0.54, grip: 0, pose: JUMP_POSE(-0.92, 1.7, -0.88, -0.33, -0.98, 0.2) },
+      { t: 0.59, grip: 0, pose: JUMP_POSE(-0.02, -0.46, 0, 0.04, 2.5, -0.52) },        // spring: legs straight, arms up
+      { t: 1.10, grip: 0, pose: JUMP_POSE(-0.24, -0.05, -0.66, 0.63, 0.52, 0.4) },     // land with bent knees
+      { t: 2.12, grip: 0, pose: {} },
+    ] },
   // raise the straight right arm forward, close the hand as it meets the glass, keep raising to lift
   grab: { id: 'ref-grab', name: 'Reference pick-up', skill: 'grab', loop: false, period: 5, keys: [
     { t: 0, grip: 0, pose: Object.assign({}, REST_POSE) },
@@ -390,7 +414,55 @@ function clipPose(clip, t) {
   for (const k of POSE_KEYS) out[k] = pa[k] + (pb[k] - pa[k]) * f;
   return out;
 }
-/** Where every part would be for a pose, given the torso position: used to draw ghosts. */
+/* ---------- playing the ideal: can this body and physics do the skill at all? ----------
+   Replayed joint angles alone can't balance (nobody stands by holding a fixed pose: you keep correcting), so the
+   ideal gets two simple reflexes on top of the reference movement: the ankles keep the centre of mass over the feet,
+   and the hips keep the torso at the tilt the movement asks for. Both are off while airborne. This is a check that a
+   skill is possible before agents train on it, shown in Test mode; it is never trained on.                         */
+const BALANCE = { ax: 1.5, av: 0.8, hx: 1.7, land: 0.2 };   // ankle: rad per m of lean and per m/s; hip: per rad of torso tilt; landing: leg angle per m/s
+function centreOfMass(body) {
+  let m = 0, x = 0, vx = 0;
+  for (const rb of body.partList) { const k = rb.mass(); m += k; x += k * rb.translation().x; vx += k * rb.linvel().x; }
+  return { x: x / m, vx: vx / m };
+}
+/** The ideal's joint targets (and grip) at time t, for this body as it is right now (st: the task's state). */
+function idealPose(skill, body, t, st) {
+  // a movement's own reflex settings apply while it plays; once it's over, the body just stands, with the standing
+  // reflexes (the jump's settings were tuned for the landing and rock the body on its heels if kept)
+  const clip = REFERENCE[skill], pose = clipPose(clip, t), g = (!idealOver(skill, t, 0) && clip.balance) || BALANCE;
+  // reaching: from clip.aim.from on, both arms point straight at the target (you look at what you reach for)
+  const target = clip.aim && st && t >= clip.aim.from ? clip.aim.target(st) : null;
+  if (target) {
+    const tr = body.torso.translation(), ta = body.torso.rotation(), sx = tr.x - Math.sin(ta) * 0.20, sy = tr.y + Math.cos(ta) * 0.20;
+    const sh = wrap(Math.atan2(target.x - sx, -(target.y - sy)) - ta);
+    for (const s of ['L', 'R']) { pose['shoulder' + s] = Math.max(-1, Math.min(3, sh)); pose['elbow' + s] = 0; }
+  }
+  const airborne = ['footL', 'footR'].every(f => body.footEnd(f, -1) > 0.02 && body.footEnd(f, 1) > 0.02);
+  if (airborne) {
+    // landing: swing the legs to point down under the body, a little ahead in the direction it's moving, so the feet
+    // come down where they can catch it (the hips still follow the clip if it asks for the legs further forward)
+    const leg = Math.max(-0.4, Math.min(0.4, g.land * centreOfMass(body).vx)) - wrap(body.torso.rotation());
+    for (const s of ['L', 'R']) pose['hip' + s] = Math.max(leg, Math.min(pose['hip' + s], leg + 0.6));
+  } else {
+    const c = centreOfMass(body), feet = (body.parts.footL.translation().x + body.parts.footR.translation().x) / 2;
+    const ankle = g.ax * (c.x - feet) + g.av * c.vx, hip = g.hx * (wrap(body.torso.rotation()) - pose.torso);
+    for (const s of ['L', 'R']) { pose['ankle' + s] -= ankle; pose['hip' + s] += hip; }
+  }
+  return pose;
+}
+/** A one-off movement (jump, pick-up) is over `after` seconds past its last keyframe; stand and walk loop forever. */
+function idealOver(skill, t, after = 1) { const c = REFERENCE[skill]; return !c.loop && t > c.keys[c.keys.length - 1].t + after; }
+/** Runs the ideal on each variant at full difficulty; returns [{ variant, ok, text }]. Check this before training. */
+function idealCheck(R, skill, opts) {
+  return [-1, 0, 1].map(variant => {
+    const tr = new Trial(R, skill, [freshBrain(Brain.makeRng(1), true)], Object.assign({ seed: 5, variant, hard: 1, push: 0, noise: 0, springy: true, earlyStop: false, ideal: true }, opts));
+    tr.run();
+    const a = tr.agents[0], out = { variant, ok: tr.successes()[0], text: tr.task.describe(a.st, a.body) };
+    tr.free();
+    return out;
+  });
+}
+/** Where every part would be for a pose, given the torso position. */
 function poseParts(pose, tx, ty) {
   const out = { torso: { x: tx, y: ty, a: pose.torso } };
   const byId = {}; for (const p of BIPED.parts) byId[p.id] = p;
@@ -416,6 +488,10 @@ const GLASS = { hx: 0.035, hy: 0.06, density: 36 };
 const GRIP_REACH = 0.11;    // palm centre to glass surface for the hand to close on it (fingers reach ~10 cm)
 const TABLE = { hx: 0.16, hy: 0.02, leg: 0.015, density: 115 };   // a free-standing table, ~8 kg: it slides and tips
 const energyBonus = body => 3 * body.energyLeft / body.energyMax;
+const FRUIT = { r: 0.05, reachUp: 1.98 };   // reachUp: hand centre with an arm straight up, standing flat-footed (shoulder 1.40 + arm 0.58)
+/** Where the fruit hangs: just within reach at first (arm up, hand touching it), then ~30 cm higher at full difficulty,
+    which needs about a 20 cm jump on top of reaching up on tiptoe. */
+const fruitSpot = (hard, variant) => ({ x: 0.12 + 0.06 * (variant || 0) * hard, y: 1.98 + 0.32 * hard + 0.03 * (variant || 0) * hard });
 const TASKS = {
   stand: {
     name: 'Stand', seconds: 8, energy: 14000,
@@ -466,6 +542,49 @@ const TASKS = {
     describe(st, body) { return st.reachedAt !== null ? `reached the food in ${st.reachedAt.toFixed(1)} s · ${Math.round(100 * body.energyLeft / body.energyMax)}% energy left` : `${body.pos().x.toFixed(1)} of ${st.foodX.toFixed(1)} m${body.fallen ? ' · fell' : body.energyLeft <= 0 ? ' · out of energy' : ''}`; },
     success(st) { return st.reachedAt !== null; },
     successText: 'reached the food',
+  },
+  jump: {
+    // Food is out of reach: a fruit hangs above the head. Touch it, then land and stay on your feet.
+    // Muscles are weaker the faster they move here (see FV_VMAX), so the jump is about as high as a person's.
+    name: 'Jump for fruit', seconds: 6, energy: 9000,
+    body: { muscleSpeed: true, hipsLow: 0.80 },   // a jump needs a deep crouch: hips can go lower before it counts as a fall
+    blurb: 'A fruit hangs just out of reach. Jump, touch it with a hand, and land on your feet.',
+    setup(R, world, x0, variant, hard) {
+      const f = fruitSpot(hard === undefined ? 1 : hard, variant);
+      return { fx: x0 + f.x, fy: f.y, alive: 0, minDist: 9, pickedAt: null, steady: 0 };
+    },
+    hands(body) { return [body.handPos(body.parts.foreR), body.handPos(body.parts.foreL)]; },
+    senseTask(st, body) {
+      // where the fruit is from the nearer hand; a = 1 once it's picked
+      const [r, l] = this.hands(body), h = Math.hypot(st.fx - r.x, st.fy - r.y) <= Math.hypot(st.fx - l.x, st.fy - l.y) ? r : l;
+      return { dx: Math.max(-2, Math.min(2, (st.fx - h.x) * 2)), dy: Math.max(-2, Math.min(2, (st.fy - h.y) * 2)), a: st.pickedAt !== null ? 1 : 0 };
+    },
+    step(st, body, motors, trial) {
+      st.alive += DT;
+      const t = trial ? trial.time : 0;
+      this.hands(body).forEach((h, i) => {
+        const d = Math.max(0, Math.hypot(st.fx - h.x, st.fy - h.y) - FRUIT.r - 0.045);
+        st.minDist = Math.min(st.minDist, d);
+        if (st.pickedAt === null && d < 0.01) { st.pickedAt = t; st.hand = i; }   // 0 = right hand, 1 = left
+      });
+      // after picking it: feet back on the ground and the body settled
+      const grounded = body.footClear('footL') < 0.02 && body.footClear('footR') < 0.02, still = Math.abs(body.torso.linvel().y) < 0.3;
+      st.steady = st.pickedAt !== null && grounded && still ? st.steady + DT : 0;
+    },
+    done(st) { return st.steady >= 1; },   // picked it and landed: no need to keep simulating
+    score(st, body) {
+      let f = 3 * (1 - Math.min(1, st.minDist / 0.8)) + st.alive * 0.3 + energyBonus(body);   // get a hand close, then touch
+      if (st.pickedAt !== null) f += 5 + (body.fallen ? 0 : 3 + Math.min(1, st.steady) * 2);   // landed and stayed up
+      if (body.fallen) f -= 3;
+      return f;
+    },
+    creditRest(st, body, trial) { st.alive += (trial.maxSteps - trial.steps) * DT; },
+    describe(st, body) {
+      return st.pickedAt !== null ? (body.fallen ? 'touched the fruit, then fell' : `got the fruit at ${st.pickedAt.toFixed(1)} s${st.steady >= 1 ? ' · landed' : ''}`)
+        : `hand ${(st.minDist * 100).toFixed(0)} cm short${body.fallen ? ' · fell' : ''}`;
+    },
+    success(st, body) { return st.pickedAt !== null && !body.fallen; },
+    successText: 'touched the fruit and landed on its feet',
   },
   grab: {
     name: 'Pick up the glass', seconds: 7, energy: 12000,
@@ -551,6 +670,7 @@ class Trial {
     this.override = opts.override || null;           // test mode: { jointId: angle } you're moving
     this.gripOverride = opts.gripOverride === undefined ? null : opts.gripOverride;   // test mode: hand forced open (-1) or closed (1)
     this.brainOff = false;                           // test mode: motors slack, the body doesn't react
+    this.ideal = !!opts.ideal;                       // the reference movement (with balance reflexes) drives the body instead of the brain
     this.symmetric = !!opts.symmetric;               // mirror-symmetric legs (see mirrorSenses)
     this.springy = !!opts.springy;                   // springy knees (see SPRINGY_KNEE)
     this.mirrored = new Float32Array(SENSES); this.legOut = new Float32Array(3);
@@ -567,7 +687,7 @@ class Trial {
     this.agents = brains.map(params => {
       const world = makeWorld(R);
       if (this.terrain.length) placeTerrain(R, world, this.terrain);
-      const body = new Biped(R, world, 0, { terrain: this.terrain, energy: this.energy, springy: this.springy });
+      const body = new Biped(R, world, 0, Object.assign({ terrain: this.terrain, energy: this.energy, springy: this.springy }, this.task.body, opts.body));
       body.torso.setLinvel({ x: push, y: 0 }, true);
       const st = this.task.setup(R, world, 0, this.variant, this.hard, this);
       return { world, body, st, net: new Brain.Network(SIZES, params), done: false };
@@ -588,7 +708,8 @@ class Trial {
         for (let k = 0; k < 3; k++) out[LEG_L[k]] = this.legOut[k];
       } else out = a.net.forward(inp);
       if (this.gripOverride !== null) out[MOTORS - 1] = this.gripOverride;
-      if (this.brainOff) a.body.relax(); else a.body.act(out, this.override);
+      if (this.ideal) { const p = idealPose(this.taskId, a.body, this.time, a.st); out[MOTORS - 1] = p.grip ? 1 : -1; a.body.act(out, p); }
+      else if (this.brainOff) a.body.relax(); else a.body.act(out, this.override);
       this.task.step(a.st, a.body, out, this);
       a.body.wristReflex();
       a.body.stepPhysics();
@@ -623,7 +744,7 @@ function freshBrain(rng, springy) {
 
 /** Senses that a skill never uses (always 0 while training it), by index into the sense list. */
 const SENSE_TASK = [34, 35, 36, 37], SENSE_AHEAD = AHEAD.map((_, i) => 38 + i);
-const UNUSED_SENSES = { stand: SENSE_TASK.concat(SENSE_AHEAD), walk: [35, 36, 37], grab: SENSE_AHEAD };
+const UNUSED_SENSES = { stand: SENSE_TASK.concat(SENSE_AHEAD), walk: [35, 36, 37], grab: SENSE_AHEAD, jump: [36].concat(SENSE_AHEAD) };
 /** Start skill `to` from a brain trained on skill `from`: cut the connections from senses that were
     always blank in `from`. Their weights were never tested, so leaving them in makes the brain flail
     the moment those senses light up (a Stand brain fell within 0.4 s when it first saw the glass). */
@@ -631,7 +752,7 @@ function transferBrain(params, from, to) {
   const out = Float32Array.from(params), fan = SIZES[0];
   if (from === to) return out;
   for (let j = 0; j < SIZES[1]; j++) for (const i of UNUSED_SENSES[from] || []) out[j * (fan + 1) + i] = 0;
-  if (to === 'grab') {
+  if (to === 'grab' || to === 'jump') {
     // Loosen the arms and hand: a Stand brain can hold them pinned at a limit (tanh saturated), where small
     // changes to the brain don't move them at all (Pax's arms never moved). Legs are left as they were.
     const hid = SIZES[1], start = SIZES[1] * (fan + 1);
@@ -647,10 +768,10 @@ const hardness = generation => Math.min(1, generation / 150);
 /** Grip assist for a generation: full at first, gone by generation 200. */
 const gripAssist = generation => Math.max(0, 1 - generation / 200);
 function episodeConfigs(taskId, generation, extra) {
-  const hard = hardness(generation), n = taskId === 'grab' ? 3 : 2, out = [];
+  const hard = hardness(generation), varied = taskId === 'grab' || taskId === 'jump', n = varied ? 3 : 2, out = [];
   for (let e = 0; e < n; e++) out.push({
     seed: generation * 7919 + e * 104729 + 1,
-    variant: taskId === 'grab' ? (e % 3) - 1 : 0,   // grab: glass nearer, middle, farther
+    variant: varied ? (e % 3) - 1 : 0,   // grab: glass nearer, middle, farther; jump: fruit nearer and lower, middle, farther and higher
     hard, push: hard, noise: 0.02 * hard,             // curriculum: shoves, sensor noise and obstacles grow with training
     assist: taskId === 'grab' ? gripAssist(generation) : 0,
     terrainLevel: terrainLevel(generation),
@@ -675,9 +796,9 @@ function evaluate(R, taskId, population, generation, extra) {
   }));
 }
 
-const api = { DT, BIPED, SENSES, SPRINGY_KNEE, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
-  makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, GROUP, groups,
-  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, setScuff: v => { SCUFF_J_PER_M = v; } };
+const api = { DT, BIPED, SENSES, SPRINGY_KNEE, freshBrain, mirrorSenses, MIRROR_SWAPS, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, FRUIT, fruitSpot, TASKS, Biped, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, evaluate,
+  makeWorld, distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, BALANCE, centreOfMass, idealPose, idealOver, idealCheck, GROUP, groups,
+  BASAL_W, HOLD_W_PER_NM, WORK_EFF, TIRE, RECOVER, FV_VMAX, FV_CURVE, setScuff: v => { SCUFF_J_PER_M = v; } };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body2D = api;
 }

@@ -15,7 +15,7 @@
    "exportedAt": "...ISO date...",
    "name": "Ash",                 // agent name
    "bodyPlan": "biped2d-v1",      // which body it controls; a brain only fits its own body plan
-   "skill": "walk",               // "walk" | "grab"
+   "skill": "walk",               // "stand" | "walk" | "jump" | "grab"
    "sizes": [38, 24, 11],         // network layer sizes (inputs, hidden..., outputs)
    "weights": "base64 Float32",   // all weights and biases, layer by layer
    "generation": 120,             // generations of evolution so far

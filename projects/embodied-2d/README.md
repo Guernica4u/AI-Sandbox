@@ -5,7 +5,7 @@ Agents with physical bodies learn motor skills by themselves. Each body is a
 knees, ankles, shoulders, elbows; left and right are separate), human-shaped
 feet (heel behind the ankle) and a right hand that can close. A small neural
 network (49 senses → 32 hidden → 11 motors) runs 60 times a second and sets
-every motor's target angle. Nothing about walking or grabbing is scripted, and
+every motor's target angle. Nothing about walking, jumping or grabbing is scripted, and
 nothing copies a human.
 
 Open `index.html` directly (works from `file://`) or through GitHub Pages.
@@ -16,9 +16,9 @@ are trained examples.
 
 | Mode | What it does |
 |---|---|
-| **Watch** | The agent tries its skill. *Show ideal* draws a reference human movement as a ghost, for comparison only (it is never trained on). *Success check* runs 10 attempts. Click near the body to shove it. |
+| **Watch** | The agent tries its skill. *Success check* runs 10 attempts. Click near the body to shove it. |
 | **Train** | 48 variations per generation, in the background (you can keep watching or testing). |
-| **Test** | Move the limbs yourself (drag any part, or hold a slider; let go and the brain takes over) and see how the agent reacts. *Brain off* makes the body go limp; *Freeze time* pauses physics (sliders still pose it). Nothing here changes any brain or training run. |
+| **Test** | Move the limbs yourself (drag any part, or hold a slider; let go and the brain takes over) and see how the agent reacts. *Brain off* makes the body go limp. *Play ideal movement* takes over the body and moves every joint through a reference human movement for the skill, under the same physics (muscles, gravity, balance), so you can see what the real body does with it; it's for comparison only and never trained on. Nothing here changes any brain or training run. |
 
 ## Training speed
 
@@ -72,9 +72,10 @@ hundred watts); what matters is the *relative* cost of different movements.
 |---|---|---|
 | Stand | Stay upright and in place while being shoved every 2 s | stayed standing |
 | Walk to food | Reach food 6–10 m away before the energy runs out; sticks and logs appear as training goes on | reached the food |
+| Jump for fruit | A fruit hangs overhead: touch it with either hand, then land and stay on your feet. It starts just within reach of a raised arm and hangs ~30 cm higher at full difficulty (1.98 m → 2.30 m) | touched the fruit and didn't fall |
 | Pick up the glass | The glass stands on a free-standing table (~8 kg: it slides if you lean on it and tips if you bump it). Reach, touch, close the hand, lift, keep it upright | lifted 10 cm without spilling or knocking the table over |
 
-Walk and Pick up the glass start from the agent's Stand brain.
+Walk, Jump and Pick up the glass start from the agent's Stand brain.
 
 **Curriculum** (gets harder as the agent improves): shoves, sensor noise and
 energy scarcity reach full strength at generation 150 (energy starts at 5× the
@@ -82,7 +83,49 @@ store, so agents first learn to balance stiffly, like a toddler, and then to
 relax); the food moves from 6 m to 9.5–10.5 m; obstacles creep in from generation
 60 to 400 (sticks up to 3.5 cm you trip over if you drag your feet, logs up to
 9 cm you step over); the grip assist (the hand closes on touch) fades from
-100% to 0% by generation 200.
+100% to 0% by generation 200; the fruit rises from 1.98 m to 2.30 m by generation 150.
+
+### Jump: muscles that are weaker when fast
+
+Jump turns on **muscle speed**: like real muscle, a joint pushes less hard the
+faster it is already moving in that direction (Hill's force-velocity curve,
+`FV_VMAX` in `body2d.js`); braking keeps full strength. Without it the motors
+push just as hard at any speed, and a crude scripted crouch-and-spring threw
+the body ~70 cm up (a typical adult jumps ~40 cm). With it the same jump rises
+~28 cm, and a learned jump with an arm swing should come close to a person's.
+It's on for Jump only, so Stand, Walk, Grab and every existing brain behave
+exactly as before; it can be switched on everywhere when the examples are next
+retrained. Jump also allows a deeper crouch before it counts as a fall (hips
+down to 80 cm instead of 98).
+
+## The ideal: is a skill possible at all?
+
+Before training on a skill, check that the best human-style movement can do it
+with this body and physics. If the ideal can't, no amount of training will.
+*Play ideal movement* (Test mode) resets the body and lets the reference
+movement drive it at full difficulty, free-standing, with the same physics as
+training. Replayed joint angles alone always topple (nobody stands by holding a
+fixed pose), so the ideal gets simple reflexes: the ankles keep the centre of
+mass over the feet, the hips keep the torso at the tilt the movement asks for,
+in the air the legs swing under the body to land, and for Jump the arms aim at
+the fruit (`idealPose` in `body2d.js`). It's for comparison only and never
+trained on. In Node, `Body2D.idealCheck(RAPIER, skill)` runs it on all three
+variants.
+
+| Skill | Ideal at full difficulty |
+|---|---|
+| Stand | stands, but falls on the full-strength backward shove: there's only 5 cm of heel behind the ankle, so a person would step back. Needs a stepping reflex. |
+| Walk to food | falls at once: walking needs a real balance controller (where to put the next foot), not replayed poses. |
+| Jump for fruit | **works**: touches the fruit at 2.30 m in all three positions and lands. The movement (crouch, timing, arm swing, landing) was found by searching for what succeeds; it's sensitive to how it starts (a small nudge before the jump often makes it fail). |
+| Pick up the glass | **works** in all three positions (lifts it ~50 cm). |
+
+**Known engine problem (for the engine review):** with 6 solver passes per
+step, a light foot under a heavy body jitters (it flips ~20° and back several
+times a second) when the ankle holds it mid-range; the ground-grip fix makes it
+worse. 12 passes removes it (~25% slower training), but the trained examples
+lose skill (Pax stand 9 → 2/10), because they learned to hide the jitter by
+pushing the ankle against its joint stop. The ideal (which holds the ankle
+mid-range) shows it as visible shaking.
 
 ## Where the example agents stand (body v3)
 

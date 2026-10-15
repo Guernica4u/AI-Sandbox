@@ -8,11 +8,11 @@
  every movement you see is a small neural network driving the motors.
 
  Modes
-   Watch   see an agent try its skill; show the reference "ideal" as a ghost
-           (for comparison only, never trained on); success check over 10 runs
+   Watch   see an agent try its skill; success check over 10 runs
    Train   48 variations per generation, in the background
    Test    move the agent's limbs yourself (drag a part, or use sliders) and see
-           how it reacts; switch its brain off (limp) or freeze time.
+           how it reacts; switch its brain off (limp); or play the reference
+           "ideal" movement on the real body (for comparison only, never trained on).
            Nothing here ever changes a brain or a training run.
 
  Realism: muscles cost energy even when holding still, tire with sustained
@@ -44,7 +44,7 @@
 :root {
   --bg: #0a0b0d; --surface: #111317; --surface2: #16191e; --line: #23272e; --line2: #2f343c;
   --text: #e8e6e1; --muted: #8a8f98; --faint: #5a5f68;
-  --signal: #ff6a3d; --hue: #4fd1c5; --water: #4aa3ff; --bad: #ef6a5b; --ghost: #9ad7ff;
+  --signal: #ff6a3d; --hue: #4fd1c5; --water: #4aa3ff; --bad: #ef6a5b;
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
@@ -179,7 +179,6 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
       <div class="bar" id="watchCtl">
         <button class="btn" id="restart">Restart</button>
         <button class="btn" id="checkBtn">Success check</button>
-        <label class="check"><input type="checkbox" id="ghostOn"> Show ideal (ghost)</label>
       </div>
       <div class="bar" id="trainCtl" hidden>
         <label class="label" for="speed">Speed</label>
@@ -192,7 +191,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
       </div>
       <div class="bar" id="testCtl" hidden>
         <button class="btn" id="brainBtn">Brain: on</button>
-        <button class="btn" id="freezeBtn">Freeze time</button>
+        <button class="btn" id="idealBtn" title="Takes over the body and moves every joint the way a person would. Physics still applies, so it can fall.">Play ideal movement</button>
         <label class="check"><input type="checkbox" id="harnessOn" checked> Harness (hold the hips up)</label>
         <button class="btn" id="handBtn">Hand: brain</button>
         <button class="btn" id="standUp">Reset body</button>
@@ -230,9 +229,9 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
       <div class="head"><span class="label">How this works</span></div>
       <div class="body about">
         <p>Each body has <b>10 motorised joints</b> (both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, pressure under heels and toes, the ground ahead, its energy and tiredness, where the goal is) and sets a target for every motor.</p>
-        <p><b>Nobody programs the movements</b>, and nothing copies a human: the ghost is only there to compare. Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, food farther away, sticks and logs, and the grip assist fades away.</p>
+        <p><b>Nobody programs the movements</b>, and nothing copies a human: the ideal movement in Test is only there to compare. Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, food farther away, sticks and logs, and the grip assist fades away.</p>
         <p><b>Muscles are realistic-ish:</b> pushing costs energy even when holding still, sustained effort tires a joint, and every attempt has a limited energy store. In Walk the food is far away, so a wasteful way of walking runs out before it gets there.</p>
-        <p><b>Test</b> lets you move the limbs and see how the agent reacts. Switch the brain off to see the body go limp, or freeze time. Nothing there affects learning.</p>
+        <p><b>Test</b> lets you move the limbs and see how the agent reacts. Switch the brain off to see the body go limp, or play the ideal movement: it takes over the body and moves every joint the way a person would, under the same physics, so you can see what the real body does with it. Nothing there affects learning.</p>
         <p>New agents start knowing nothing. <b>Kit, Juno and Pax</b> are trained examples.</p>
       </div>
     </section>
@@ -259,14 +258,15 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
-const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
-  REFERENCE, clipPose, poseParts } = Body2D;
+const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, FRUIT, fruitSpot, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
+  } = Body2D;
 let R = null;
 
-const SKILLS = ['stand', 'walk', 'grab'];
+const SKILLS = ['stand', 'walk', 'jump', 'grab'];
 const SKILL_NOTES = {
   stand: '<strong>Stand.</strong> Stay upright and in place while something shoves you every 2 seconds. Sitting, kneeling and the splits count as falling. Scored on time on your feet, minus drifting and a too-wide stance.',
   walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. Sticks (drag your feet and you trip) and logs appear as training goes on. Starts from the agent\'s Stand brain.',
+  jump: '<strong>Jump for fruit.</strong> A fruit hangs just out of reach. Touch it with either hand, then land and stay on your feet. At first it hangs just within reach of a raised arm; as training goes on it hangs about 30 cm higher, so only a real jump gets it. Muscles here get weaker the faster they move, like real ones, so the jump is about as high as a person\'s. Starts from the Stand brain.',
   grab: '<strong>Pick up the glass.</strong> A glass of water stands on a free-standing table (lean on it and it slides, bump it and it tips). Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
 };
 const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
@@ -274,7 +274,7 @@ const NAMES = ['Nova', 'Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Ec
 
 /* ================= agents & storage ================= */
 const LS_KEY = 'glassbox-embodied2d/v3';
-const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false, ghost: false };
+const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false };
 const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history || [], created: b.created, updated: b.updated }; }
@@ -309,7 +309,7 @@ function agentFromJSON(j, i) {
 function saveAll() {
   if (!App.dirty) return;
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify({ v: 3, agentIndex: App.agents.indexOf(agent()), skill: App.skill, ghost: App.ghost, agents: App.agents.map(agentToJSON) }));
+    localStorage.setItem(LS_KEY, JSON.stringify({ v: 3, agentIndex: App.agents.indexOf(agent()), skill: App.skill, agents: App.agents.map(agentToJSON) }));
     App.dirty = false; $('#saveStatus').textContent = 'saved';
   } catch (e) { $('#saveStatus').textContent = 'not saved (storage blocked)'; }
 }
@@ -322,7 +322,7 @@ function loadAll() {
   try { d = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { d = null; }
   if (d && Array.isArray(d.agents)) {
     App.agents = d.agents.map(agentFromJSON).filter(Boolean);
-    if (App.agents.length) { App.agentId = (App.agents[d.agentIndex] || App.agents[0]).id; if (SKILLS.includes(d.skill)) App.skill = d.skill; App.ghost = !!d.ghost; }
+    if (App.agents.length) { App.agentId = (App.agents[d.agentIndex] || App.agents[0]).id; if (SKILLS.includes(d.skill)) App.skill = d.skill; }
     // refresh the example agents if this version ships newer ones (your own agents are untouched)
     const fresh = starterAgents(1);
     App.agents = App.agents.map(a => a.starter ? (fresh.find(f => f.name === a.name) || a) : a);
@@ -339,7 +339,7 @@ const agent = () => App.agents.find(a => a.id === App.agentId);
 function markDirty() { App.dirty = true; $('#saveStatus').textContent = 'unsaved'; }
 function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms); }
 
-/** The brain an agent uses for a skill. Walk and grab start from the stand brain (with unused senses cut). */
+/** The brain an agent uses for a skill. Walk, jump and grab start from the stand brain (with unused senses cut). */
 function brainFor(a, skill) {
   const own = a.skills[skill], st = a.skills.stand;
   if (own) return { params: own.params, from: skill, symmetric: !!own.symmetric, springy: !!own.springy };
@@ -363,7 +363,7 @@ function startWatch() {
   if (Watch.trial) Watch.trial.free();
   const a = agent();
   Watch.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], Object.assign(levelOpts(a, App.skill),
-    { seed: (Math.random() * 1e9) | 0, variant: App.skill === 'grab' ? Math.floor(Math.random() * 3) - 1 : 0, push: 0, keepSimulating: true }));
+    { seed: (Math.random() * 1e9) | 0, variant: App.skill === 'grab' || App.skill === 'jump' ? Math.floor(Math.random() * 3) - 1 : 0, push: 0, keepSimulating: true }));
   Watch.endAt = 0;
   View.camX = 0;
 }
@@ -536,7 +536,7 @@ const Train = {
     if (!this.demo || (this.demo.finished && performance.now() > this.demoEnd)) {
       if (this.demo) this.demo.free();
       const a = App.agents.find(x => x.id === this.agentId);
-      this.demo = new Trial(R, this.skill, [this.evo.best], Object.assign(levelOpts(a, this.skill), { seed: (Math.random() * 1e9) | 0, variant: this.skill === 'grab' ? Math.floor(Math.random() * 3) - 1 : 0, push: 0, keepSimulating: true }));
+      this.demo = new Trial(R, this.skill, [this.evo.best], Object.assign(levelOpts(a, this.skill), { seed: (Math.random() * 1e9) | 0, variant: this.skill === 'grab' || this.skill === 'jump' ? Math.floor(Math.random() * 3) - 1 : 0, push: 0, keepSimulating: true }));
       this.demoEnd = 0;
       View.camX = 0;
     }
@@ -556,19 +556,21 @@ function renderTrainUI() {
 
 /* ================= test mode: move the limbs, see how it reacts (never affects learning) ================= */
 const Probe = {
-  trial: null, override: {}, harness: null, tilt: 0, drag: null, grip: null, brainOn: true, frozen: false,
-  start() {
+  trial: null, override: {}, harness: null, tilt: 0, drag: null, grip: null, brainOn: true, ideal: false,
+  start(full) {
     this.stopTrial();
+    this.ideal = false;
     const a = agent();
     this.override = {};
-    this.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], Object.assign(levelOpts(a, App.skill),
+    this.trial = new Trial(R, App.skill, [brainFor(a, App.skill).params], Object.assign(levelOpts(a, App.skill), full ? { hard: 1 } : {},
       { seed: 4242, variant: 0, push: 0, noise: 0, terrain: [], foodX: 8, override: this.override, keepSimulating: true }));
     this.trial.maxSteps = Infinity;
     this.trial.hard = 0;                       // no automatic shoves while you test
-    this.world().numSolverIterations = 24;     // stiffer joint limits while you pull on limbs (one body, so it's cheap)
+    if (!full) this.world().numSolverIterations = 24;   // stiffer joint limits while you pull on limbs (the ideal gets the same physics as training)
     this.trial.gripOverride = this.grip;
     this.trial.brainOff = !this.brainOn;
     this.tilt = 0;
+    if (full) $('#harnessOn').checked = false;   // the ideal plays free-standing
     this.setHarness($('#harnessOn').checked);
     View.camX = 0.2;
   },
@@ -586,7 +588,7 @@ const Probe = {
     this.harness = { anchor, joint };
     b.fallen = false;
   },
-  setTilt(v) { this.tilt = v; if (this.frozen) this.setPoseFrozen('torso', v); if (this.harness) this.setHarness(true); },
+  setTilt(v) { this.tilt = v; if (this.harness) this.setHarness(true); },
   /** Pointer pressed at world point p: grab the nearest body part. */
   grab(p) {
     const b = this.body();
@@ -618,38 +620,42 @@ const Probe = {
     d.point = { x: px, y: py };
   },
   step() {
-    if (!this.trial || this.frozen) return;
+    if (!this.trial) return;
     this.pullForce();
     const ag = this.trial.agents[0];
     ag.done = false; ag.body.fallen = false;              // testing never ends, even if the body falls over
     ag.body.energyLeft = ag.body.energyMax;               // and never runs out of energy (tiredness still shows)
     this.trial.step();
   },
-  toggleBrain() { this.brainOn = !this.brainOn; if (this.trial) this.trial.brainOff = !this.brainOn; renderProbeUI(); },
-  toggleFreeze() { this.frozen = !this.frozen; this.drag = null; renderProbeUI(); },
+  toggleBrain() { if (this.ideal) this.stopIdeal(); this.brainOn = !this.brainOn; if (this.trial) this.trial.brainOff = !this.brainOn; renderProbeUI(); },
+  /** Play the ideal: a fresh body, then the reference movement (with balance reflexes, see idealPose in body2d.js)
+      drives every joint and the hand instead of the brain, at full difficulty (the fruit at its highest, the glass
+      at its farthest) and free-standing. Physics is the real thing, so if the ideal can't do the skill, it shows.
+      When a one-off movement is done it keeps standing still until you press Stop (handing an agent's brain a body
+      in a pose it has never been in just makes it fall). */
+  toggleIdeal() {
+    if (this.ideal) return this.stopIdeal();
+    this.start(true);
+    this.ideal = true; this.trial.ideal = true;
+    renderProbeUI();
+  },
+  stopIdeal() {
+    this.ideal = false;
+    if (this.trial) this.trial.ideal = false;
+    renderProbeUI();
+  },
   cycleHand() {
+    if (this.ideal) this.stopIdeal();
     this.grip = this.grip === null ? 1 : this.grip === 1 ? -1 : null;
     if (this.trial) this.trial.gripOverride = this.grip;
     renderProbeUI();
-  },
-  /** While time is frozen: put a joint (or the torso tilt) where you say, directly, without physics. */
-  setPoseFrozen(id, value) {
-    const b = this.body();
-    if (!b) return;
-    const pose = b.pose(); pose[id] = value;
-    const t = b.torso.translation(), P = poseParts(pose, t.x, t.y);
-    for (const pid in P) {
-      const rb = b.parts[pid];
-      rb.setTranslation({ x: P[pid].x, y: P[pid].y }, true); rb.setRotation(P[pid].a, true);
-      rb.setLinvel({ x: 0, y: 0 }, true); rb.setAngvel(0, true);
-    }
   },
 };
 function renderProbeUI() {
   $('#brainBtn').textContent = Probe.brainOn ? 'Brain: on (reacts)' : 'Brain: off (limp)';
   $('#brainBtn').classList.toggle('on', !Probe.brainOn);
-  $('#freezeBtn').textContent = Probe.frozen ? 'Unfreeze time' : 'Freeze time';
-  $('#freezeBtn').classList.toggle('on', Probe.frozen);
+  $('#idealBtn').textContent = Probe.ideal ? 'Stop ideal movement' : 'Play ideal movement';
+  $('#idealBtn').classList.toggle('on', !!Probe.ideal);
   $('#handBtn').textContent = Probe.grip === null ? 'Hand: brain' : Probe.grip === 1 ? 'Hand: closed' : 'Hand: open';
   $('#handBtn').classList.toggle('on', Probe.grip !== null);
 }
@@ -680,7 +686,7 @@ function drawWorld() {
   const { t: trial, a: lead, training, demo } = shown();
   ctx.fillStyle = '#0d0f12'; ctx.fillRect(0, 0, w, h);
   if (!lead) return;
-  const s = View.scale = h / 2.5, gy = h * 0.86, mono = css('--mono');
+  const s = View.scale = h / (App.skill === 'jump' ? 3.3 : 2.5), gy = h * 0.86, mono = css('--mono');   // jump: room for the fruit overhead
   const tx = lead.body.pos().x;
   if (App.mode !== 'test') View.camX += ((App.skill === 'walk' ? tx + 0.6 : 0.25) - View.camX) * 0.08;
   const X = x => w / 2 + (x - View.camX) * s, Y = y => gy - y * s;
@@ -711,13 +717,27 @@ function drawWorld() {
     ctx.fillStyle = '#4caf50'; ctx.beginPath(); ctx.ellipse(fx + 0.04 * s, fy - r - 0.02 * s, 0.03 * s, 0.012 * s, -0.5, 0, 7); ctx.fill();
     ctx.fillStyle = '#8a8f98'; ctx.font = `${10 * d}px ${mono}`; ctx.textAlign = 'center'; ctx.fillText('FOOD', fx, fy - r - 0.08 * s); ctx.textAlign = 'left';
   }
+  // fruit hanging from a branch (Jump)
+  if (lead.st && lead.st.fy !== undefined && trial.taskId === 'jump') {
+    const st = lead.st, fx = X(st.fx), r = FRUIT.r * s, by = Y(st.fy + 0.12);
+    ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 6 * d; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(fx - 0.6 * s, by - 0.05 * s); ctx.lineTo(fx + 0.5 * s, by + 0.02 * s); ctx.stroke();
+    ctx.fillStyle = '#4caf50'; for (const [ox, oy, a] of [[-0.35, -0.04, -0.4], [0.3, 0.0, 0.5], [-0.1, -0.02, 0.2]]) { ctx.beginPath(); ctx.ellipse(fx + ox * s, by + oy * s, 0.07 * s, 0.025 * s, a, 0, 7); ctx.fill(); }
+    if (st.pickedAt === null) {
+      ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.moveTo(fx, by); ctx.lineTo(fx, Y(st.fy) - r); ctx.stroke();
+      ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(fx, Y(st.fy), r, 0, 7); ctx.fill();
+      ctx.fillStyle = '#8a8f98'; ctx.font = `${10 * d}px ${mono}`; ctx.textAlign = 'left'; ctx.fillText(`FRUIT ${st.fy.toFixed(2)} m`, fx + r + 6 * d, Y(st.fy) + 4 * d);
+    } else {   // picked: it's in the hand that touched it
+      const b = lead.body, h = b.handPos(st.hand ? b.parts.foreL : b.parts.foreR);
+      ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(X(h.x), Y(h.y + 0.02), r * 0.9, 0, 7); ctx.fill();
+    }
+    ctx.lineCap = 'butt';
+  }
   if (training) {
     for (const a of trial.agents) if (a !== lead) { drawObjects(ctx, a, d, 0.12); drawBody(ctx, a.body, d, 0.16, false); }
     drawObjects(ctx, lead, d, 1); drawBody(ctx, lead.body, d, 1, true);
   } else {
     drawObjects(ctx, lead, d, 1);
-    // the ideal as a ghost, aligned with the body's torso
-    if (App.mode === 'watch' && App.ghost) { const t = lead.body.torso.translation(); drawGhost(ctx, clipPose(REFERENCE[App.skill], trial.time), t.x, t.y, d, 'IDEAL'); }
     drawBody(ctx, lead.body, d, 1, true);
   }
   // test mode: harness and drag line
@@ -737,7 +757,7 @@ function drawWorld() {
   const a = agent();
   const cap = training ? `TRAINING · ${a.name} · ${TASKS[Train.skill].name} · generation ${Train.evo.generation + 1} · try ${Train.ep + 1}/${Train.episodes.length} · ${trial.time.toFixed(1)} s`
     : demo ? `TRAINING ON ${Pool.workers ? Pool.workers.length : 1} CPU CORES · ${a.name} · ${TASKS[Train.skill].name} · generation ${Train.evo.generation} · replaying the best so far`
-    : App.mode === 'test' ? `TEST · ${a.name} · ${TASKS[App.skill].name} · ${Probe.frozen ? 'TIME FROZEN' : Probe.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'} · nothing is learned`
+    : App.mode === 'test' ? `TEST · ${a.name} · ${TASKS[App.skill].name} · ${Probe.ideal ? 'playing the ideal movement (the brain is not in control)' : Probe.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'} · nothing is learned`
     : `${a.name} · ${TASKS[App.skill].name} · ${trial.time.toFixed(1)} s`;
   ctx.fillText(cap.toUpperCase(), 14 * d, 22 * d);
   if (training) { ctx.fillStyle = '#5a5f68'; ctx.fillText(`${trial.agents.length} VARIATIONS AT ONCE (FAINT) · BEST RIGHT NOW (SOLID)`, 14 * d, 38 * d); }
@@ -771,7 +791,7 @@ function drawObjects(ctx, a, d, alpha) {
   ctx.globalAlpha = 1;
 }
 
-/** Draws a body from part transforms { id: {x, y, a} } (used for both real bodies and ghosts). */
+/** Draws a body from part transforms { id: {x, y, a} } (real bodies, faint training variations). */
 function drawParts(ctx, P, d, style) {
   const X = View.X, Y = View.Y, s = View.scale;
   ctx.lineCap = 'round';
@@ -799,14 +819,6 @@ function drawParts(ctx, P, d, style) {
     seg('upper' + side, col); seg('fore' + side, col);
     const f = P['fore' + side]; ball(f.x + Math.sin(f.a) * 0.16, f.y - Math.cos(f.a) * 0.16, 0.045, col);
   }
-}
-function drawGhost(ctx, pose, tx, ty, d, label) {
-  const g = css('--ghost');
-  ctx.globalAlpha = 0.8; ctx.setLineDash([5 * d, 3 * d]);
-  drawParts(ctx, poseParts(pose, tx, ty), d, { outline: true, far: 'rgba(154,215,255,.45)', near: g, torso: g, head: g });
-  ctx.setLineDash([]); ctx.globalAlpha = 1;
-  ctx.fillStyle = g; ctx.font = `${10 * d}px ${css('--mono')}`;
-  ctx.fillText(label, View.X(tx) + 0.25 * View.scale, View.Y(ty + 0.62));
 }
 function drawBody(ctx, body, d, alpha, detail) {
   const P = {};
@@ -880,7 +892,7 @@ function buildJoints() {
     for (const j of BIPED.joints) {
       const sl = $('#js-' + j.id);
       // while you hold the slider the joint goes where you put it; let go and the brain reacts again
-      sl.addEventListener('input', e => { if (Probe.frozen) Probe.setPoseFrozen(j.id, +e.target.value); else Probe.override[j.id] = +e.target.value; });
+      sl.addEventListener('input', e => { if (Probe.ideal) Probe.stopIdeal(); Probe.override[j.id] = +e.target.value; });
       sl.addEventListener('change', () => { delete Probe.override[j.id]; sl.blur(); });
     }
     $('#js-torso').addEventListener('input', e => { if (!$('#harnessOn').checked) { $('#harnessOn').checked = true; } Probe.setTilt(+e.target.value); });
@@ -940,6 +952,7 @@ function renderStatus() {
   const hd = hardness(gen), parts = [hd >= 1 ? 'full' : `${Math.round(hd * 100)}%`];
   if (App.skill === 'walk') parts.push(`obstacles ${Math.round(terrainLevel(gen) * 100)}%`);
   if (App.skill === 'grab') parts.push(`assist ${Math.round(gripAssist(gen) * 100)}%`);
+  if (App.skill === 'jump') parts.push(`fruit at ${fruitSpot(hd, 0).y.toFixed(2)} m`);
   $('#stHard').textContent = parts.join(' · ');
   const tst = a.tests[App.skill];
   if (!Check.running) {
@@ -955,7 +968,7 @@ function renderOutcome() {
   const { t, a, training } = shown();
   if (!a) return;
   $('#stOutLabel').textContent = training ? 'Best right now' : 'Right now';
-  $('#stOut').textContent = App.mode === 'test' ? (a.body.grip ? 'holding the glass' : Probe.frozen ? 'time frozen' : Probe.brainOn ? 'reacting to you' : 'limp') : t.task.describe(a.st, a.body);
+  $('#stOut').textContent = App.mode === 'test' ? (a.body.grip ? 'holding the glass' : Probe.ideal ? `ideal${Body2D.idealOver(App.skill, t.time) ? ' (done, holding still)' : ''}: ${t.task.describe(a.st, a.body)}` : Probe.brainOn ? 'reacting to you' : 'limp') : t.task.describe(a.st, a.body);
   const b = a.body;
   $('#stEnergy').textContent = App.mode === 'test' ? `${Math.round(b.power)} W` : `${Math.round(100 * b.energyLeft / b.energyMax)}% · ${Math.round(b.power)} W`;
   $('#stTired').textContent = `tired: legs ${Math.round(b.tiredness('legs') * 100)}% · arms ${Math.round(b.tiredness('arms') * 100)}%`;
@@ -997,7 +1010,6 @@ function wire() {
   $('#modeTabs').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.mode !== App.mode) select({ mode: b.dataset.mode }); };
   $('#restart').onclick = startWatch;
   $('#checkBtn').onclick = () => Check.start();
-  $('#ghostOn').onchange = e => { App.ghost = e.target.checked; markDirty(); };
   $('#speed').onchange = e => {
     Train.speed = e.target.value === 'pool' ? 'pool' : 'page'; Train.budget = e.target.value === 'pool' ? 12 : +e.target.value;
     if (Train.running) toast('Applies the next time you start training.');
@@ -1006,7 +1018,7 @@ function wire() {
   $('#trainBadge').onclick = () => Train.stop();
   // test controls
   $('#brainBtn').onclick = () => Probe.toggleBrain();
-  $('#freezeBtn').onclick = () => Probe.toggleFreeze();
+  $('#idealBtn').onclick = () => Probe.toggleIdeal();
   $('#harnessOn').onchange = e => Probe.setHarness(e.target.checked);
   $('#handBtn').onclick = () => Probe.cycleHand();
   $('#standUp').onclick = () => { Probe.start(); };
@@ -1047,7 +1059,6 @@ function wire() {
     if (!View.X) return;
     const p = worldPoint(e);
     if (App.mode === 'test') {
-      if (Probe.frozen) return toast('Time is frozen: use the sliders to move joints, or unfreeze to drag.');
       if (Probe.grab(p)) { view.setPointerCapture(e.pointerId); $('#stage').classList.add('dragging'); }
       return;
     }
@@ -1080,7 +1091,6 @@ function refreshTabsLight() { const b = $(`#skillTabs button[data-skill="${Train
 
 loadAll();
 wire();
-$('#ghostOn').checked = App.ghost;
 RAPIER.init().then(() => {
   R = RAPIER;
   $('#loading').remove();
