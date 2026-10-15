@@ -47,7 +47,7 @@ const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
    per part; com = centre of mass offset along the part. side: 'L' limbs are drawn behind the trunk, 'R' in front.
    The trunk bends: pelvis, belly and chest with two spine joints, and the head sits on a neck. Each foot has toes.   */
 const BIPED = {
-  id: 'biped2d-v5',           // v5: MuJoCo, muscle pairs; spine (pelvis, belly, chest), neck and head, toes
+  id: 'biped2d-v6',           // v6: MuJoCo, muscle pairs; spine, neck and head, toes; human senses with nerve delays, stretch reflex
   root: 'pelvis',
   parts: [
     { id: 'pelvis', shape: 'box', hx: 0.12, hy: 0.09, x: 0, y: 1.00, mass: 9.5, inertia: 0.0713 },
@@ -90,20 +90,41 @@ const BIPED = {
 const NJ = BIPED.joints.length, NM = 2 * NJ;   // 15 joints, 30 muscles (muscle 2i pulls joint i's angle down, 2i+1 up)
 const ROOT_Y = BIPED.parts.find(p => p.id === BIPED.root).y;   // pelvis height standing (1.00 m)
 
-/* What the brain senses, in order. The same layout is used for every skill so
-   skills can later be merged into one brain.
-     6  head tilt (sin, cos) and spin (the inner ear), pelvis velocity x/y, pelvis height
-    30  joint angles and joint speeds (15 joints)
-     6  pressure under each heel, ball and toe tip (L heel, ball, toes, R heel, ball, toes)
-     2  foot height above the ground (L, R)
-     2  a 1 Hz clock (sin, cos)
-     4  task inputs (target dx, dy, holding, extra)
-     8  ground height ahead (from 0.1 m to 1.2 m in front)
-     3  energy left, leg tiredness, arm tiredness
+/* What the brain senses: what a person's body actually reports, not exact numbers it couldn't know.
+     5  inner ear (in the head): tilt (sin, cos), spin, acceleration forward and up
+     2  seeing yourself move: the head's speed forward and up (vision)
+    15  joint position (joint receptors)
+    30  muscle stretch sensors (spindles): how fast each muscle is being stretched (+) or shortening (-)
+    30  tendon force sensors (Golgi organs): how hard each muscle is pulling
+     6  touch under each heel, ball and toe tip (L heel, ball, toes, R heel, ball, toes)
+     2  a 1 Hz rhythm (sin, cos), like the spinal cord's own rhythm generators
+     4  task inputs, seen (target dx, dy, holding, extra)
+     8  ground height ahead, seen (from 0.1 m to 1.2 m in front)
+     3  energy left, leg tiredness, arm tiredness (felt)
+   Nerve delays: every sense arrives late by a realistic amount (SENSE_DELAY), and commands reach the muscles late
+   (MOTOR_DELAY). A spinal stretch reflex tenses a muscle that's suddenly stretched, without the brain (Biped.stepPhysics).
    What the brain sets: 30 muscle excitations (0..1; negative = 0), then grip (-1..1).        */
 const AHEAD = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0, 1.2];
-const SENSE_AT = (() => { let i = 0; const at = {}; for (const [k, n] of [['body', 6], ['joints', NJ * 2], ['pressure', 6], ['footHeight', 2], ['clock', 2], ['task', 4], ['ahead', AHEAD.length], ['inner', 3]]) { at[k] = i; i += n; } at.total = i; return at; })();
-const SENSES = SENSE_AT.total;                                 // 61
+const SENSE_LIST = [['ear', 5], ['sight', 2], ['joints', NJ], ['spindles', NM], ['tendons', NM], ['pressure', 6], ['clock', 2], ['task', 4], ['ahead', AHEAD.length], ['inner', 3]];
+const SENSE_AT = (() => { let i = 0; const at = {}; for (const [k, n] of SENSE_LIST) { at[k] = i; i += n; } at.total = i; return at; })();
+const SENSES = SENSE_AT.total;                                 // 105
+/* Nerve delays in brain steps (1 step = 17 ms): the inner ear is close to the brain (17 ms), legs and feet are far
+   (33 ms), arms and trunk in between (17 ms), the eyes are slow (100 ms), feeling tired is slower still (50 ms).    */
+const DELAY = { ear: 1, sight: 6, legs: 2, trunk: 1, arms: 1, touch: 2, clock: 0, task: 6, ahead: 6, inner: 3 };
+const SENSE_DELAY = (() => {
+  const d = new Int8Array(SENSES), jointDelay = j => DELAY[BIPED.joints[j].group];
+  const fill = (k, f) => { for (let i = 0; i < SENSE_LIST.find(e => e[0] === k)[1]; i++) d[SENSE_AT[k] + i] = f(i); };
+  fill('ear', () => DELAY.ear); fill('sight', () => DELAY.sight); fill('joints', jointDelay);
+  fill('spindles', m => jointDelay(m >> 1)); fill('tendons', m => jointDelay(m >> 1)); fill('pressure', () => DELAY.touch);
+  fill('clock', () => DELAY.clock); fill('task', () => DELAY.task); fill('ahead', () => DELAY.ahead); fill('inner', () => DELAY.inner);
+  return d;
+})();
+/** Motor nerve delays, per muscle (and the grip): commands to the legs take 33 ms, to the trunk and arms 17 ms. */
+const MOTOR_DELAY = Int8Array.from({ length: 2 * NJ + 1 }, (_, m) => m < 2 * NJ ? DELAY[BIPED.joints[m >> 1].group] : DELAY.arms);
+const HIST = 8;   // brain steps of history kept for the delays
+// stretch reflex: extra excitation per unit of stretch speed (fibre speed / top speed) above a small threshold; switched
+// down in a muscle while its opposite muscle is being driven (reciprocal inhibition), so it doesn't fight movements
+const REFLEX = { gain: 0.8, threshold: 0.02 };
 const MOTORS = NM + 1;                                         // 30 muscles + grip
 const SIZES = [SENSES, 32, MOTORS];
 // output groups for Evolution (half the mutations touch only one group): leg muscles, trunk and neck muscles, arm muscles + grip
@@ -189,6 +210,8 @@ class Biped {
     this.jq = Int32Array.from(this.joints, j => j.q); this.jdq = Int32Array.from(this.joints, j => j.dq);
     this.mus = Muscle.makeMuscles(BIPED.joints.map(j => j.id));
     this.exc = new Float64Array(NM); this.mfat = new Float64Array(NM); this.mtq = new Float64Array(NM);
+    this.senseHist = Array.from({ length: HIST }, () => new Float32Array(SENSES)); this.excHist = Array.from({ length: HIST }, () => new Float64Array(NM));
+    this.frame = 0; this.histFilled = false; this.prevHeadVel = null;   // delays: what was sensed and commanded each brain step
     this.grip = false; this.held = null; this.gripAnchor = null;
     this.harness = null;                    // test mode: { x, y, tilt } holds the hips up
     this.fallen = false;
@@ -232,27 +255,40 @@ class Biped {
   com() { let m = 0, x = 0, vx = 0; for (const p of this.partList) { const k = p.mass(); m += k; x += k * this.data.xipos[3 * p.id]; vx += k * this.vel[3 * p.id]; } return { x: x / m, vx: vx / m }; }
 
   /** Fills out[] with what the body senses (see SENSES). task = { dx, dy, a } extra inputs from the task. */
-  sense(out, time, task) {
-    const q = this.data.qpos, v = this.data.qvel, a = this.head.rotation();
+  /** What the body reports right now (see SENSES), before any nerve delay. task = { dx, dy, a } from the task. */
+  senseNow(out, time, task) {
+    const q = this.data.qpos, a = this.head.rotation(), hv = this.head.linvel();
+    const acc = this.prevHeadVel ? { x: (hv.x - this.prevHeadVel.x) / DT, y: (hv.y - this.prevHeadVel.y) / DT } : { x: 0, y: 0 };
+    this.prevHeadVel = hv;
     let i = 0;
-    out[i++] = Math.sin(a); out[i++] = Math.cos(a); out[i++] = this.head.angvel() * 0.25;   // the inner ear is in the head
-    out[i++] = v[0] * 0.3; out[i++] = v[1] * 0.3; out[i++] = this.torso.translation().y - ROOT_Y;
-    for (const j of this.joints) { const s = j.spec; out[i++] = ((q[j.q] - s.lo) / (s.hi - s.lo)) * 2 - 1; }
-    for (const j of this.joints) out[i++] = v[j.dq] * 0.1;
-    const press = h => Math.max(0, 1 - h / 0.015);                                            // pressure: 1 = pressed down
+    out[i++] = Math.sin(a); out[i++] = Math.cos(a); out[i++] = this.head.angvel() * 0.25;     // inner ear: tilt, spin
+    out[i++] = Math.max(-1, Math.min(1, acc.x * 0.05)); out[i++] = Math.max(-1, Math.min(1, acc.y * 0.05));   // and acceleration
+    out[i++] = hv.x * 0.3; out[i++] = hv.y * 0.3;                                              // seeing yourself move
+    for (const j of this.joints) { const s = j.spec; out[i++] = ((q[j.q] - s.lo) / (s.hi - s.lo)) * 2 - 1; }   // joint position
+    for (let m = 0; m < NM; m++) out[i++] = this.mus[m].vn;                                    // stretch sensors
+    for (let m = 0; m < NM; m++) out[i++] = Math.min(1.5, this.mus[m].force / this.mus[m].F0); // tendon force sensors
+    const press = h => Math.max(0, 1 - h / 0.015);                                            // touch: 1 = pressed down
     for (const s of ['L', 'R']) { out[i++] = press(this.footEnd('foot' + s, -1)); out[i++] = press(this.footEnd('foot' + s, 1)); out[i++] = press(this.footEnd('toes' + s, 1)); }
-    out[i++] = Math.min(1, this.soleClear('L') * 5); out[i++] = Math.min(1, this.soleClear('R') * 5);
-    out[i++] = Math.sin(time * Math.PI * 2); out[i++] = Math.cos(time * Math.PI * 2);   // a 1 Hz clock: a rhythm to walk to
+    out[i++] = Math.sin(time * Math.PI * 2); out[i++] = Math.cos(time * Math.PI * 2);        // a 1 Hz rhythm
     out[i++] = task ? task.dx : 0; out[i++] = task ? task.dy : 0;
     out[i++] = this.grip ? 1 : 0; out[i++] = task ? task.a : 0;
-    const tx = this.torso.translation().x;
-    for (const d of AHEAD) out[i++] = this.groundAt(tx + d) * 5;                         // what's on the ground ahead
+    const tx = this.head.translation().x;
+    for (const d of AHEAD) out[i++] = this.groundAt(tx + d) * 5;                              // what's on the ground ahead
     out[i++] = this.energyLeft / this.energyMax; out[i++] = this.tiredness('legs'); out[i++] = this.tiredness('arms');
+    return out;
+  }
+  /** Fills out[] with what the brain gets: each sense as it was SENSE_DELAY brain steps ago (see SENSES). */
+  sense(out, time, task) {
+    const now = this.senseHist[this.frame % HIST];
+    this.senseNow(now, time, task);
+    if (!this.histFilled) { for (const h of this.senseHist) h.set(now); this.histFilled = true; }   // at the start: as if it had always been so
+    for (let i = 0; i < SENSES; i++) out[i] = this.senseHist[(this.frame - SENSE_DELAY[i] + HIST) % HIST][i];
     return out;
   }
   /** actions[0..19]: muscle excitations (negative = off). override: { jointId: angle } joints steered to an angle
       instead (test sliders, the ideal) by a simple servo made of that joint's two muscles. */
   act(actions, override, servo = IDEAL_SERVO) {
+    this.limp = false;
     for (let m = 0; m < NM; m++) this.exc[m] = clamp01(actions[m]);
     for (const j of this.joints) {
       const t = override && override[j.spec.id];
@@ -262,11 +298,22 @@ class Biped {
       j.target = t;
     }
   }
-  /** Brain off: every muscle relaxes and the body goes limp. */
-  relax() { this.exc.fill(0); for (const j of this.joints) j.target = this.angle(j); }
+  /** Brain off: every muscle relaxes and the body goes limp, like someone unconscious: the stretch reflexes are
+      suppressed too (otherwise a lying body keeps twitching, one muscle's reflex stretching the other's). */
+  relax() { this.exc.fill(0); this.limp = true; for (const j of this.joints) j.target = this.angle(j); }
   /** One brain step of physics: SUB sub-steps, each with the muscles' joint torques, pushes, harness and grip. */
   stepPhysics() {
     const mj = this.mj, m = this.model, d = this.data, low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));   // running on empty: crippling
+    // what reaches each muscle: the command sent MOTOR_DELAY brain steps ago, plus the spinal stretch reflex (a muscle
+    // being stretched fast tenses by itself, from its own stretch sensor, ~17 ms later: the last brain step's reading)
+    this.excHist[this.frame % HIST].set(this.exc);
+    const drive = this.drive || (this.drive = new Float64Array(NM));
+    for (let k = 0; k < NM; k++) drive[k] = this.excHist[(this.frame - MOTOR_DELAY[k] + HIST) % HIST][k];
+    if (!this.limp) for (let k = 0; k < NM; k++) {
+      const stretch = Math.max(0, this.mus[k].vn - REFLEX.threshold), opposite = drive[k ^ 1];   // k ^ 1: the other muscle of the pair
+      drive[k] = clamp01(drive[k] + REFLEX.gain * stretch * (1 - opposite));
+    }
+    this.frame++;
     const tor = this.torso.id, xf = d.xfrc_applied, qf = d.qfrc_applied, P = this.pending;
     if (this.gripAnchor) { const e = m.eq_data; for (let k = 0; k < 6; k++) e[k] = this.gripAnchor[k]; }   // this body's grip point (the model is shared)
     if (d.eq_active && d.eq_active.length) d.eq_active[0] = this.grip ? 1 : 0;
@@ -278,7 +325,7 @@ class Biped {
     for (let n = 0; n < SUB; n++) {
       for (let i = 0; i < NJ; i++) {
         const q = d.qpos[this.jq[i]]; let tq = 0;
-        for (let s = 0; s < 2; s++) { const k = 2 * i + s, t = this.mus[k].step(this.exc[k] * (1 - 0.6 * this.mfat[k]) * low, q, H); this.mtq[k] = t; tq += t; }
+        for (let s = 0; s < 2; s++) { const k = 2 * i + s, t = this.mus[k].step(drive[k] * (1 - 0.6 * this.mfat[k]) * low, q, H); this.mtq[k] = t; tq += t; }
         qf[this.jdq[i]] = tq;
       }
       for (let b = 1; b < m.nbody; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 2] = P[3 * b + 1]; xf[6 * b + 4] = -P[3 * b + 2]; }
@@ -773,7 +820,7 @@ function freshBrain(rng) {
 }
 
 /** Senses that a skill never uses (always 0 while training it), by index into the sense list. */
-const T = SENSE_AT.task, SENSE_TASK = [T, T + 1, T + 2, T + 3], SENSE_AHEAD = AHEAD.map((_, i) => SENSE_AT.ahead + i);
+const T = SENSE_AT.task, SENSE_TASK = [T, T + 1, T + 2, T + 3], SENSE_AHEAD = AHEAD.map((_, i) => SENSE_AT.ahead + i);   // (layout: see SENSES)
 const UNUSED_SENSES = { stand: SENSE_TASK.concat(SENSE_AHEAD), walk: [T + 1, T + 2, T + 3], grab: SENSE_AHEAD, jump: [T + 2].concat(SENSE_AHEAD) };
 /** Start skill `to` from a brain trained on skill `from`: cut the connections from senses that were
     always blank in `from`. Their weights were never tested, so leaving them in makes the brain flail
@@ -841,7 +888,7 @@ function evaluate(mj, taskId, population, stage, generation = stage, full = fals
   return full ? { scores, successRate: bestSuccess(scores, ok) } : scores;
 }
 
-const api = { DT, SUB, BIPED, ROOT_Y, SENSES, SENSE_AT, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, FRUIT, fruitSpot, TASKS, Biped, Part, Trial,
+const api = { DT, SUB, BIPED, ROOT_Y, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTOR_DELAY, DELAY, REFLEX, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, FRUIT, fruitSpot, TASKS, Biped, Part, Trial,
   freshBrain, hardness, gripAssist, terrainLevel, nextStage, bestSuccess, transferBrain, episodeConfigs, combineScores, evaluate, worldXML,
   distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, BALANCE, IDEAL_SERVO, idealPose, idealOver, idealCheck,
   BASAL_W, MAINT, WORK_COST, TIRE, RECOVER, JOINT_DAMPING, JOINT_LIMIT_SOFTNESS };

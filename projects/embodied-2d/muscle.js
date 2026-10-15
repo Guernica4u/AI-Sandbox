@@ -56,7 +56,7 @@ class MTU {
     this.Lref = ls + l0;
     this.reset();
   }
-  reset() { this.a = 0.01; this.lm = this.l0; this.force = 0; }
+  reset() { this.a = 0.01; this.lm = this.l0; this.force = 0; this.vn = 0; }
   /** Whole muscle + tendon length: shortens as the muscle moves the joint its way. */
   mtLength(theta) { return this.Lref - this.dir * this.arm * (theta - this.theta0); }
   /** Advance by dt with excitation u (0..1) at joint angle theta. Returns the joint torque (N·m). */
@@ -66,7 +66,8 @@ class MTU {
     const a = Math.max(0.01, this.a), lt = this.mtLength(theta) - this.lm;
     const ft = lt > this.ls ? (lt - this.ls) / (this.ls * this.strain) : 0;             // tendon force / F0
     const ln = this.lm / this.l0;
-    const v = fibreSpeed(a, fl(ln), fpe(ln), ft) * this.vmax * this.l0;                // fibre speed that balances the tendon
+    this.vn = fibreSpeed(a, fl(ln), fpe(ln), ft);                                     // fibre speed / top speed, + = being stretched
+    const v = this.vn * this.vmax * this.l0;                                            // fibre speed that balances the tendon
     this.lm = Math.max(0.3 * this.l0, Math.min(1.8 * this.l0, this.lm + v * dt));
     this.force = ft * this.F0;
     return this.dir * this.arm * this.force;
