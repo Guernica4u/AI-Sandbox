@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Body Mockups · Glass Box</title>
+<style>
+  :root { --bg: #0d0f12; --panel: #14171c; --line: #262b33; --text: #e8e6e1; --muted: #8a8f98; --hue: #4fd1c5; --d1: #58a6ff; --d2: #7bc96f; --d3: #e0a458; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+  header { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+  header p { margin: 0; color: var(--muted); }
+  .controls { margin-left: auto; display: flex; gap: 14px; flex-wrap: wrap; }
+  label { color: var(--muted); cursor: pointer; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; padding: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .card canvas { width: 100%; height: 420px; display: block; cursor: grab; }
+  .info { padding: 12px 14px; border-top: 1px solid var(--line); }
+  .info h2 { margin: 0 0 4px; font-size: 15px; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; margin: 6px 0 8px; }
+  .stats b { color: var(--text); font-weight: 600; }
+  .info ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+  .info li.plus::marker { content: '+  '; color: var(--d2); }
+  .info li.minus::marker { content: '–  '; color: #ef6a5b; }
+  .legend { display: flex; gap: 14px; padding: 0 18px 14px; color: var(--muted); font-size: 12.5px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  @media (max-width: 520px) { .card canvas { height: 340px; } header { padding: 12px 16px; } .grid { padding: 8px 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Glass Box · 3D body mockups</h1>
+  <p>Drag to turn a body, scroll to zoom. All are 1.70 m, ~62 kg.</p>
+  <div class="controls">
+    <label><input type="checkbox" id="showJoints" checked> Show joints</label>
+    <label><input type="checkbox" id="spin" checked> Turn slowly</label>
+  </div>
+</header>
+<div class="legend">
+  <span><span class="dot" style="background:var(--d1)"></span>hinge (bends one way: knee, elbow)</span>
+  <span><span class="dot" style="background:var(--d2)"></span>2 directions (ankle, wrist)</span>
+  <span><span class="dot" style="background:var(--d3)"></span>ball joint, 3 directions (hip, shoulder, spine)</span>
+</div>
+<div class="grid" id="grid"></div>
+
+<script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* Every body: parts (capsule between two points, box, sphere) and joints (a point + how many directions it moves).
+   Units: metres, y up, the body faces +z. Mirrored parts use side +1/-1 (x = side * value). */
+const L = [-1, 1];
+const lr = f => L.flatMap(s => f(s));
+const cap = (a, b, r) => ({ kind: 'cap', a, b, r });
+const box = (c, size, tilt = 0) => ({ kind: 'box', c, size, tilt });
+const ball = (c, r) => ({ kind: 'ball', c, r });
+const J = (p, dof, name) => ({ p, dof, name });
+
+// shared landmarks (1.70 m adult)
+const HIP = s => [s * 0.09, 0.92, 0], KNEE = s => [s * 0.09, 0.50, 0.01], ANKLE = s => [s * 0.09, 0.08, 0];
+const SHOULDER = s => [s * 0.19, 1.40, 0], ELBOW = s => [s * 0.22, 1.12, -0.01], WRIST = s => [s * 0.24, 0.86, 0.01];
+const leg = (s, toes) => [
+  cap(HIP(s), KNEE(s), 0.062), cap(KNEE(s), ANKLE(s), 0.046),
+  toes ? box([s * 0.09, 0.03, 0.03], [0.09, 0.06, 0.165]) : box([s * 0.09, 0.03, 0.055], [0.09, 0.06, 0.22]),
+  ...(toes ? [box([s * 0.09, 0.02, 0.138], [0.085, 0.04, 0.055])] : []),
+];
+const MODELS = [
+  {
+    id: 'A', name: 'A · Mannequin', blurb: 'Close to the standard humanoid used in robot-learning research.',
+    stats: { parts: 14, joints: 13, directions: 29, muscles: 58, cost: '1×' },
+    plus: ['Proven: research agents learn to walk, run and get up with a body like this', 'Bendable spine (2 joints) and neck', 'Moderate to train and to simulate'],
+    minus: ['No wrists or fingers: the hand is a ball (gripping stays a simple "close hand")', 'No toes'],
+    parts: [
+      box([0, 1.00, 0], [0.26, 0.18, 0.17]), box([0, 1.17, 0.005], [0.23, 0.16, 0.15]), box([0, 1.38, 0], [0.30, 0.26, 0.19]),
+      cap([0, 1.50, 0], [0, 1.56, 0], 0.045), ball([0, 1.645, 0.01], 0.1),
+      ...lr(s => leg(s, false)),
+      ...lr(s => [cap(SHOULDER(s), ELBOW(s), 0.042), cap(ELBOW(s), WRIST(s), 0.036), ball([s * 0.245, 0.80, 0.015], 0.045)]),
+    ],
+    joints: [J([0, 1.09, 0], 3, 'lower back'), J([0, 1.25, 0], 3, 'upper back'), J([0, 1.53, 0], 3, 'neck'),
+      ...lr(s => [J(HIP(s), 3, 'hip'), J(KNEE(s), 1, 'knee'), J(ANKLE(s), 2, 'ankle'), J(SHOULDER(s), 3, 'shoulder'), J(ELBOW(s), 1, 'elbow')])],
+  },
+  {
+    id: 'B', name: 'B · Anatomical', blurb: 'As close to a real skeleton as is sensible to simulate.',
+    stats: { parts: 24, joints: 23, directions: 45, muscles: 90, cost: '~2×' },
+    plus: ['Shoulder blades: real reaching, pushing and throwing', 'Wrists, a thumb and grouped fingers: real gripping and tool use (civilization)', 'Toes for push-off; the most human movement'],
+    minus: ['Hardest to learn: far more to control', 'About twice the simulation cost per agent'],
+    parts: [
+      box([0, 1.00, 0], [0.26, 0.18, 0.17]), box([0, 1.17, 0.005], [0.23, 0.16, 0.15]), box([0, 1.38, 0], [0.30, 0.26, 0.19]),
+      cap([0, 1.50, 0], [0, 1.56, 0], 0.045), ball([0, 1.645, 0.01], 0.1),
+      ...lr(s => leg(s, true)),
+      ...lr(s => [cap([s * 0.03, 1.47, 0.04], [s * 0.17, 1.45, 0], 0.022)]),   // collarbone / shoulder blade
+      ...lr(s => [cap(SHOULDER(s), ELBOW(s), 0.042), cap(ELBOW(s), WRIST(s), 0.036),
+        box([s * 0.245, 0.815, 0.015], [0.03, 0.09, 0.075]),                   // palm
+        cap([s * 0.245, 0.77, 0.03], [s * 0.245, 0.71, 0.035], 0.017),          // fingers (one group)
+        cap([s * 0.235, 0.84, 0.055], [s * 0.235, 0.79, 0.085], 0.014)])],      // thumb
+    joints: [J([0, 1.09, 0], 3, 'lower back'), J([0, 1.25, 0], 3, 'upper back'), J([0, 1.53, 0], 3, 'neck'),
+      ...lr(s => [J(HIP(s), 3, 'hip'), J(KNEE(s), 1, 'knee'), J(ANKLE(s), 2, 'ankle'), J([s * 0.09, 0.02, 0.11], 1, 'toes'),
+        J([s * 0.03, 1.47, 0.04], 2, 'shoulder blade'), J(SHOULDER(s), 3, 'shoulder'), J(ELBOW(s), 1, 'elbow'), J(WRIST(s), 2, 'wrist'),
+        J([s * 0.245, 0.77, 0.03], 1, 'fingers'), J([s * 0.235, 0.84, 0.055], 2, 'thumb')])],
+  },
+  {
+    id: 'C', name: 'C · Simple', blurb: 'The cheapest body that can still walk, fight and carry things.',
+    stats: { parts: 11, joints: 10, directions: 20, muscles: 40, cost: '~0.6×' },
+    plus: ['Cheapest: the most agents at once (crowds, civilization)', 'Quickest to learn'],
+    minus: ['Stiff one-piece torso: can\'t bend or twist the back', 'No neck, no hands, no toes: clumsy movement'],
+    parts: [
+      box([0, 1.215, 0], [0.30, 0.59, 0.19]), ball([0, 1.64, 0.01], 0.1),
+      ...lr(s => leg(s, false)),
+      ...lr(s => [cap(SHOULDER(s), ELBOW(s), 0.042), cap(ELBOW(s), WRIST(s), 0.036), ball([s * 0.245, 0.80, 0.015], 0.045)]),
+    ],
+    joints: [...lr(s => [J(HIP(s), 3, 'hip'), J(KNEE(s), 1, 'knee'), J(ANKLE(s), 2, 'ankle'), J(SHOULDER(s), 3, 'shoulder'), J(ELBOW(s), 1, 'elbow')])],
+  },
+];
+
+const COLORS = { 1: 0x58a6ff, 2: 0x7bc96f, 3: 0xe0a458 };
+const skin = new THREE.MeshStandardMaterial({ color: 0xd9d4ca, roughness: 0.65, metalness: 0.05 });
+const skinDark = new THREE.MeshStandardMaterial({ color: 0xa9a49a, roughness: 0.7 });
+const views = [];
+
+function buildBody(model) {
+  const g = new THREE.Group(), jg = new THREE.Group();
+  for (const p of model.parts) {
+    let mesh;
+    if (p.kind === 'cap') {
+      const a = new THREE.Vector3(...p.a), b = new THREE.Vector3(...p.b), len = a.distanceTo(b);
+      mesh = new THREE.Mesh(new THREE.CapsuleGeometry(p.r, len, 6, 14), skin);
+      mesh.position.copy(a).add(b).multiplyScalar(0.5);
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+    } else if (p.kind === 'box') {
+      const [w, h, d] = p.size, geo = new THREE.BoxGeometry(w, h, d, 1, 1, 1);
+      mesh = new THREE.Mesh(geo, p.c[1] < 0.1 ? skinDark : skin); mesh.position.set(...p.c);
+    } else { mesh = new THREE.Mesh(new THREE.SphereGeometry(p.r, 20, 14), skin); mesh.position.set(...p.c); }
+    mesh.castShadow = true; g.add(mesh);
+  }
+  for (const j of model.joints) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.022, 12, 8), new THREE.MeshBasicMaterial({ color: COLORS[j.dof], depthTest: false, transparent: true, opacity: 0.95 }));
+    m.position.set(...j.p); m.renderOrder = 2; jg.add(m);
+  }
+  g.add(jg);
+  return { body: g, joints: jg };
+}
+
+function makeView(model) {
+  const card = document.createElement('div'); card.className = 'card';
+  const canvas = document.createElement('canvas'); card.appendChild(canvas);
+  const info = document.createElement('div'); info.className = 'info';
+  const st = model.stats;
+  info.innerHTML = `<h2>${model.name}</h2><div style="color:var(--muted)">${model.blurb}</div>
+    <div class="stats"><span><b>${st.parts}</b> parts</span><span><b>${st.joints}</b> joints</span><span><b>${st.directions}</b> joint directions</span><span><b>${st.muscles}</b> muscles</span><span>cost <b>${st.cost}</b></span></div>
+    <ul>${model.plus.map(t => `<li class="plus">${t}</li>`).join('')}${model.minus.map(t => `<li class="minus">${t}</li>`).join('')}</ul>`;
+  card.appendChild(info); document.getElementById('grid').appendChild(card);
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.shadowMap.enabled = true;
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x14171c);
+  const camera = new THREE.PerspectiveCamera(32, 1, 0.05, 50); camera.position.set(1.9, 1.35, 2.6);
+  const controls = new OrbitControls(camera, canvas); controls.target.set(0, 0.88, 0); controls.enableDamping = true; controls.minDistance = 1; controls.maxDistance = 7;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x30343c, 1.4));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(2, 4, 3); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
+  Object.assign(sun.shadow.camera, { left: -1.5, right: 1.5, top: 2.2, bottom: -0.2 }); scene.add(sun);
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(1.6, 48), new THREE.MeshStandardMaterial({ color: 0x1f242b, roughness: 1 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const grid = new THREE.PolarGridHelper(1.6, 8, 6, 48, 0x2c323b, 0x2c323b); grid.position.y = 0.001; scene.add(grid);
+  const built = buildBody(model); scene.add(built.body);
+  views.push({ renderer, scene, camera, controls, canvas, built });
+}
+
+MODELS.forEach(makeView);
+const spin = document.getElementById('spin'), showJoints = document.getElementById('showJoints');
+showJoints.onchange = () => views.forEach(v => { v.built.joints.visible = showJoints.checked; });
+function frame(t) {
+  requestAnimationFrame(frame);
+  for (const v of views) {
+    const w = v.canvas.clientWidth, h = v.canvas.clientHeight;
+    if (v.canvas.width !== Math.round(w * v.renderer.getPixelRatio()) || v.canvas.height !== Math.round(h * v.renderer.getPixelRatio())) { v.renderer.setSize(w, h, false); v.camera.aspect = w / h; v.camera.updateProjectionMatrix(); }
+    if (spin.checked) v.built.body.rotation.y = t * 0.00025;
+    v.controls.update(); v.renderer.render(v.scene, v.camera);
+  }
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
