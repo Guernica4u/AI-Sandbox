@@ -232,7 +232,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
     <section class="panel">
       <div class="head"><span class="label">How this works</span></div>
       <div class="body about">
-        <p>Each body has <b>10 joints, each moved by a pair of muscles</b> (one bends it, one straightens it; both legs and both arms are separate) and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, pressure under heels and toes, the ground ahead, its energy and tiredness, where the goal is) and sets a target for every motor.</p>
+        <p>Each body has <b>15 joints, each moved by a pair of muscles</b> (one bends it, one straightens it): hips, knees, ankles, toes, a two-joint spine, a neck, shoulders and elbows, with both sides separate, and a hand that can close. Every 1/60 s a small neural network reads what the body senses (balance, joint angles, pressure under heels and toes, the ground ahead, its energy and tiredness, where the goal is) and sets a target for every motor.</p>
         <p><b>Nobody programs the movements</b>, and nothing copies a human: the ideal movement in Test is only there to compare. Training tries 48 slightly different brains, keeps the best and repeats. Difficulty grows as they improve: shoves, food farther away, sticks and logs, and the grip assist fades away.</p>
         <p><b>Muscles are realistic:</b> human strength (a knee straightens twice as hard as it bends), about 10 ms to switch on, weaker the faster they contract, and springy tendons that store energy. Physics is MuJoCo. Muscles cost energy even when holding still, sustained effort tires them, and every attempt has a limited energy store. In Walk the food is far away, so a wasteful way of walking runs out before it gets there.</p>
         <p><b>Test</b> lets you move the limbs and see how the agent reacts. Switch the brain off to see the body go limp, or play the ideal movement: it takes over the body and moves every joint the way a person would, under the same physics, so you can see what the real body does with it. Nothing there affects learning.</p>
@@ -263,7 +263,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
-const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, FRUIT, fruitSpot, Trial, hardness, gripAssist, terrainLevel, transferBrain, episodeConfigs, combineScores, wrap,
+const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, FRUIT, fruitSpot, Trial, hardness, gripAssist, terrainLevel, nextStage, bestSuccess, transferBrain, episodeConfigs, combineScores, wrap,
   } = Body2D;
 let R = null;
 
@@ -282,7 +282,7 @@ const LS_KEY = 'glassbox-embodied2d/v4m';   // v4m: MuJoCo + muscle body (older 
 const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false };
 const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-function skillFromBrain(b) { return { params: b.params, generation: b.generation, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history || [], created: b.created, updated: b.updated }; }
+function skillFromBrain(b) { return { params: b.params, generation: b.generation, stage: b.stage, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history || [], created: b.created, updated: b.updated }; }
 function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], skills: {}, tests: {} }; }
 function agentFromStarter(name, data, i) {
   const a = blankAgent(name, i, 0);
@@ -292,7 +292,7 @@ function agentFromStarter(name, data, i) {
 }
 function skillToBrainJSON(a, skill) {
   const s = a.skills[skill];
-  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, symmetric: s.symmetric, springy: s.springy, history: s.history, created: s.created, updated: s.updated });
+  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, stage: stageOf(s), sigma: s.sigma, seed: s.seed, symmetric: s.symmetric, springy: s.springy, history: s.history, created: s.created, updated: s.updated });
 }
 function agentToJSON(a) {
   const skills = {};
@@ -356,9 +356,11 @@ function brainFor(a, skill) {
 const SYMMETRIC_DEFAULT = false;   // tested: no better success or gait than free legs, so off by default
 // New brains get springy knees (see body2d.js). Brains trained with the old stiff knees keep them.
 const SPRINGY_DEFAULT = true;
+/** A skill's difficulty stage (brains from before stages existed: their generation, as the old schedule had it). */
+const stageOf = s => s ? (typeof s.stage === 'number' ? s.stage : s.generation) : 0;
 /** Curriculum settings for watching or testing a skill at its current level. */
 function levelOpts(a, skill) {
-  const g = a.skills[skill] ? a.skills[skill].generation : 0, hard = hardness(g);
+  const g = a.skills[skill] ? stageOf(a.skills[skill]) : 0, hard = hardness(g);
   return { hard, terrainLevel: terrainLevel(g), assist: skill === 'grab' ? gripAssist(g) : 0, noise: 0.02 * hard, symmetric: brainFor(a, skill).symmetric, springy: brainFor(a, skill).springy };
 }
 
@@ -426,8 +428,9 @@ function __trainerWorker() {
     await ready;
     if (m.type !== 'run') return;
     const genomes = m.genomes.map(g => new Float32Array(g));
-    const scores = m.configs.map(cfg => { const t = new Body2D.Trial(self.MJ, m.taskId, genomes, cfg), sc = t.run(); t.free(); return sc; });
-    self.postMessage({ type: 'done', id: m.id, scores });
+    const scores = [], successes = [];
+    for (const cfg of m.configs) { const t = new Body2D.Trial(self.MJ, m.taskId, genomes, cfg); scores.push(t.run()); successes.push(t.successes()); t.free(); }
+    self.postMessage({ type: 'done', id: m.id, scores, successes });
   };
 }
 const Pool = {
@@ -442,7 +445,7 @@ const Pool = {
       const n = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));   // one per core (the page itself only replays the best brain)
       this.workers = Array.from({ length: n }, () => {
         const w = new Worker(url);
-        w.onmessage = e => { const p = this.pending[e.data.id]; if (p) { delete this.pending[e.data.id]; p.resolve(e.data.scores); } };
+        w.onmessage = e => { const p = this.pending[e.data.id]; if (p) { delete this.pending[e.data.id]; p.resolve(e.data); } };
         w.onerror = err => { err.preventDefault && err.preventDefault(); this.fail(new Error(err.message || 'worker error')); };
         return w;
       });
@@ -467,18 +470,20 @@ const Pool = {
         this.workers[w].postMessage({ type: 'run', id, taskId, configs, genomes: chunk.map(g => Array.from(g)) });
       }));
     }
-    return Promise.all(jobs).then(parts => configs.map((_, e) => [].concat(...parts.map(p => p[e]))));
+    return Promise.all(jobs).then(parts => ({
+      scores: configs.map((_, e) => [].concat(...parts.map(p => p.scores[e]))),
+      successes: configs.map((_, e) => [].concat(...parts.map(p => p.successes[e]))) }));
   },
 };
 
 /* ================= training ================= */
 const Train = {
-  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], trial: null, budget: 12,
+  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], okEpisode: [], stage: 0, trial: null, budget: 12,
   speed: 'pool', mode: 'main', token: 0, demo: null, demoEnd: 0, symmetric: false, springy: false, lastGenAt: 0, genSecs: 0,
   start() {
     if (this.running) this.stop();
     const a = agent(), s = a.skills[App.skill], from = brainFor(a, App.skill);
-    this.skill = App.skill; this.agentId = a.id; this.symmetric = from.symmetric; this.springy = from.springy;
+    this.skill = App.skill; this.agentId = a.id; this.symmetric = from.symmetric; this.springy = from.springy; this.stage = stageOf(s);
     this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (s ? s.seed : a.seed * 31 + App.skill.length) + (s ? s.generation : 0), sigma: s ? s.sigma : 0.15,
       parent: from.params, generation: s ? s.generation : 0, history: s ? s.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
     if (!s && from.from === 'stand') toast(`Starting ${TASKS[App.skill].name} from ${a.name}'s Stand brain`);
@@ -499,17 +504,17 @@ const Train = {
   async loopPool(token) {
     while (this.running && token === this.token) {
       let per;
-      try { per = await Pool.run(this.skill, episodeConfigs(this.skill, this.evo.generation, { symmetric: this.symmetric, springy: this.springy }), this.evo.population); }
+      try { per = await Pool.run(this.skill, episodeConfigs(this.skill, this.stage, this.evo.generation), this.evo.population); }
       catch (err) {
         if (token !== this.token) return;
         toast('Background training stopped working; continuing on the page.', 4000);
         this.mode = 'main'; this.newGeneration(); return;
       }
       if (!this.running || token !== this.token) return;
-      this.perEpisode = per; this.finishGeneration();
+      this.perEpisode = per.scores; this.okEpisode = per.successes; this.finishGeneration();
     }
   },
-  newGeneration() { this.episodes = episodeConfigs(this.skill, this.evo.generation, { symmetric: this.symmetric, springy: this.springy }); this.ep = 0; this.perEpisode = []; this.newEpisode(); },
+  newGeneration() { this.episodes = episodeConfigs(this.skill, this.stage, this.evo.generation); this.ep = 0; this.perEpisode = []; this.okEpisode = []; this.newEpisode(); },
   newEpisode() { if (this.trial) this.trial.free(); this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]); },
   tick() {
     if (!this.running || this.mode !== 'main') return;
@@ -517,19 +522,21 @@ const Train = {
     do {
       this.trial.step();
       if (this.trial.finished) {
-        this.perEpisode.push(this.trial.scores());
+        this.perEpisode.push(this.trial.scores()); this.okEpisode.push(this.trial.successes());
         if (++this.ep < this.episodes.length) this.newEpisode();
         else { this.finishGeneration(); this.newGeneration(); if (realtime) break; }
       }
     } while (!realtime && performance.now() < until);
   },
   finishGeneration() {
-    this.evo.tell(combineScores(this.perEpisode));
+    const combined = combineScores(this.perEpisode);
+    this.stage = nextStage(this.stage, bestSuccess(combined, this.okEpisode));   // harder only when the best brain copes
+    this.evo.tell(combined);
     const now = performance.now(); this.genSecs = this.genSecs ? this.genSecs * 0.8 + (now - this.lastGenAt) / 1000 * 0.2 : (now - this.lastGenAt) / 1000; this.lastGenAt = now;
     const a = App.agents.find(x => x.id === this.agentId);
     if (a) {
       const t = new Date().toISOString(), prev = a.skills[this.skill];
-      a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, symmetric: this.symmetric, springy: this.springy,
+      a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, stage: this.stage, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, symmetric: this.symmetric, springy: this.springy,
         history: this.evo.history, created: prev ? prev.created : t, updated: t };
       a.starter = false; markDirty();
     }
@@ -597,7 +604,8 @@ const Probe = {
       const lx = (p.x - t.x) * c - (p.y - t.y) * s, ly = (p.x - t.x) * s + (p.y - t.y) * c;
       let d;
       if (part.shape === 'capsule') d = Math.hypot(lx, Math.max(0, Math.abs(ly) - part.hh - (part.hand ? 0.06 : 0))) - part.r;
-      else d = Math.hypot(Math.max(0, Math.abs(lx) - part.hx), Math.max(0, Math.abs(ly) - part.hy - (part.head ? 0.5 : 0)));
+      else if (part.shape === 'sphere') d = Math.hypot(lx, ly) - part.r;
+      else d = Math.hypot(Math.max(0, Math.abs(lx) - part.hx), Math.max(0, Math.abs(ly) - part.hy));
       if (d < bd) { bd = d; best = { part, rb, lx, ly }; }
     }
     if (!best) return false;
@@ -807,16 +815,17 @@ function drawParts(ctx, P, d, style) {
     ctx.restore();
   };
   const ball = (x, y, r, col) => { ctx.beginPath(); ctx.arc(X(x), Y(y), r * s, 0, 7); if (style.outline) { ctx.strokeStyle = col; ctx.lineWidth = 1.5 * d; ctx.stroke(); } else { ctx.fillStyle = col; ctx.fill(); } };
-  for (const side of ['L', 'R']) {
-    const col = side === 'L' ? style.far : style.near;
-    if (side === 'R') {
-      box('torso', style.torso);
-      const t = P.torso; ball(t.x - Math.sin(t.a) * 0.40, t.y + Math.cos(t.a) * 0.40, 0.10, style.head);
-    }
-    seg('thigh' + side, col); seg('shin' + side, col); box('foot' + side, col);
-    seg('upper' + side, col); seg('fore' + side, col);
-    const f = P['fore' + side]; ball(f.x + Math.sin(f.a) * 0.16, f.y - Math.cos(f.a) * 0.16, 0.045, col);
-  }
+  // far-side limbs, then the trunk and head, then near-side limbs, every part drawn from the body plan
+  const draw = (p, col) => {
+    if (!P[p.id]) return;
+    if (p.shape === 'box') box(p.id, col);
+    else if (p.shape === 'capsule') seg(p.id, col);
+    else { const t = P[p.id]; ball(t.x, t.y, p.r, p.id === 'head' ? style.head : col); }
+    if (p.hand) { const f = P[p.id]; ball(f.x + Math.sin(f.a) * -p.hand.y, f.y - Math.cos(f.a) * -p.hand.y, p.hand.r, col); }
+  };
+  for (const p of BIPED.parts) if (p.side === 'L') draw(p, style.far);
+  for (const p of BIPED.parts) if (!p.side) draw(p, style.torso);
+  for (const p of BIPED.parts) if (p.side === 'R') draw(p, style.near);
 }
 function drawBody(ctx, body, d, alpha, detail) {
   const P = {};
@@ -884,7 +893,7 @@ function buildJoints() {
   const rows = BIPED.joints.map(j => test
     ? `<span class="n" id="jn-${j.id}">${j.id}</span><input type="range" id="js-${j.id}" min="${j.lo}" max="${j.hi}" step="0.01" value="${j.rest}"><span class="f" id="jf-${j.id}"></span><span class="v" id="jv-${j.id}"></span>`
     : `<span class="n">${j.id}</span><span class="jbar" id="jb-${j.id}"><s></s><i></i><u></u></span><span class="f" id="jf-${j.id}"></span><span class="v" id="jv-${j.id}"></span>`);
-  if (test) rows.unshift(`<span class="n">torso tilt</span><input type="range" id="js-torso" min="-1.0" max="0.6" step="0.01" value="${Probe.tilt}" title="Needs the harness"><span class="f"></span><span class="v" id="jv-torso"></span>`);
+  if (test) rows.unshift(`<span class="n">pelvis tilt</span><input type="range" id="js-torso" min="-1.0" max="0.6" step="0.01" value="${Probe.tilt}" title="Needs the harness"><span class="f"></span><span class="v" id="jv-torso"></span>`);
   $('#joints').innerHTML = rows.join('');
   if (test) {
     for (const j of BIPED.joints) {
@@ -947,9 +956,9 @@ function renderStatus() {
   const gen = live ? Train.evo.generation : s ? s.generation : 0;
   $('#stGen').textContent = gen;
   $('#stBest').textContent = live && Train.evo.bestFitness > -Infinity ? Train.evo.bestFitness.toFixed(2) : s && s.history.length ? s.history[s.history.length - 1][1].toFixed(2) : '—';
-  const hd = hardness(gen), parts = [hd >= 1 ? 'full' : `${Math.round(hd * 100)}%`];
-  if (App.skill === 'walk') parts.push(`obstacles ${Math.round(terrainLevel(gen) * 100)}%`);
-  if (App.skill === 'grab') parts.push(`assist ${Math.round(gripAssist(gen) * 100)}%`);
+  const stage = live ? Train.stage : stageOf(s), hd = hardness(stage), parts = [hd >= 1 ? 'full' : `${Math.round(hd * 100)}%`];
+  if (App.skill === 'walk') parts.push(`obstacles ${Math.round(terrainLevel(stage) * 100)}%`);
+  if (App.skill === 'grab') parts.push(`assist ${Math.round(gripAssist(stage) * 100)}%`);
   if (App.skill === 'jump') parts.push(`fruit at ${fruitSpot(hd, 0).y.toFixed(2)} m`);
   $('#stHard').textContent = parts.join(' · ');
   const tst = a.tests[App.skill];
@@ -1060,8 +1069,8 @@ function wire() {
       return;
     }
     if (App.mode !== 'watch' || !Watch.trial) return;
-    const body = Watch.trial.agents[0].body, t = body.torso.translation(), dir = p.px < View.X(t.x) ? 1 : -1;
-    body.torso.applyImpulse({ x: dir * 45, y: 0 }, true);
+    const body = Watch.trial.agents[0].body, t = body.chest.translation(), dir = p.px < View.X(t.x) ? 1 : -1;
+    body.chest.applyImpulse({ x: dir * 45, y: 0 }, true);   // a shove to the chest
     View.shove = { x: View.X(t.x) - dir * 0.15 * View.scale, y: p.py, dir, t: performance.now() };
   });
   view.addEventListener('pointermove', e => { if (App.mode === 'test' && Probe.drag) { const p = worldPoint(e); Probe.drag.target = { x: p.x, y: p.y }; } });

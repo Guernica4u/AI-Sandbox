@@ -182,7 +182,7 @@ function brainToJSON(b) {
   return {
     format: 'glassbox-body-brain', formatVersion: 1, app: 'Glass Box', exportedAt: new Date().toISOString(),
     name: b.name, bodyPlan: b.bodyPlan, skill: b.skill, sizes: b.sizes, weights: toBase64(b.params),
-    generation: b.generation, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history, created: b.created, updated: b.updated,
+    generation: b.generation, stage: b.stage, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history, created: b.created, updated: b.updated,
   };
 }
 /** Returns { ok: true, brain } or { ok: false, error }. */
@@ -195,7 +195,7 @@ function brainFromJSON(j) {
   if (params.length !== Network.paramCount(j.sizes)) return { ok: false, error: 'Weights do not match the layer sizes.' };
   return { ok: true, brain: {
     name: String(j.name || 'Unnamed').slice(0, 40), bodyPlan: j.bodyPlan, skill: j.skill, sizes: j.sizes, params,
-    generation: j.generation | 0, sigma: +j.sigma || 0.1, seed: j.seed >>> 0, symmetric: j.symmetric === true, springy: j.springy === true, history: Array.isArray(j.history) ? j.history : [],
+    generation: j.generation | 0, stage: typeof j.stage === 'number' ? j.stage : (j.generation | 0), sigma: +j.sigma || 0.1, seed: j.seed >>> 0, symmetric: j.symmetric === true, springy: j.springy === true, history: Array.isArray(j.history) ? j.history : [],
     created: j.created, updated: j.updated,
   } };
 }

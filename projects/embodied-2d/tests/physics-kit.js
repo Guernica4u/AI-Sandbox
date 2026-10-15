@@ -62,22 +62,29 @@ env.load().then(({ mj, Brain, Muscle, Body2D: B }) => {
   {
     let peak = 0;
     simulate('stand', {}, 4, (b, tr) => { b.exc.fill(0.15); if (tr.time > 2) for (const j of b.joints) peak = Math.max(peak, Math.abs(b.speed(j))); },
-      b => { b.setHarness(true); const act = b.act.bind(b); b.act = () => { act(new Float32Array(21).fill(0.15)); }; });
+      b => { b.setHarness(true); const act = b.act.bind(b); b.act = () => { act(new Float32Array(B.MOTORS).fill(0.15)); }; });
     report('in harness, steady tone: joints shaking', peak, 'rad/s', peak < 0.5, '< 0.5');
   }
   if (process.env.SPEED) { const mk = Muscle.makeMuscles; Muscle.makeMuscles = (ids, o) => mk(ids, Object.assign({ speed: +process.env.SPEED }, o)); }   // calibration runs
   // 5. Jump: the muscles alone. Torso held upright, crouch, then every leg straightening muscle fully on (a crude squat jump)
   {
     let best = 0;
-    const crouchFor = depth => ({ hipL: depth, hipR: depth, kneeL: -1.6 * depth, kneeR: -1.6 * depth, ankleL: 0.3, ankleR: 0.3 });
+    const crouchFor = depth => ({ hipL: depth, hipR: depth, kneeL: -1.6 * depth, kneeR: -1.6 * depth, ankleL: 0.3, ankleR: 0.3, lumbar: 0, thoracic: 0, neck: 0 });
     for (const depth of [0.7, 0.9, 1.1, 1.3]) for (const hold of [10, 25]) {
       let rise = 0;
       simulate('stand', {}, 2.2, (b, tr) => {
-        const f = tr.steps; rise = Math.max(rise, b.torso.translation().y - 1.2);
-        if (f >= 40 + hold) b.act = (out) => { b.exc.fill(0); for (const j of b.joints) { const g = j.spec.id.replace(/[LR]$/, ''); if (/hip|ankle/.test(g)) b.exc[2 * j.i] = 1; else if (g === 'knee') b.exc[2 * j.i + 1] = 1; } };
+        const f = tr.steps; rise = Math.max(rise, b.torso.translation().y - B.ROOT_Y);
+        if (f >= 40 + hold) b.act = (out) => {
+          b.exc.fill(0);
+          for (const j of b.joints) {
+            const g = j.spec.id.replace(/[LR]$/, '');
+            if (/hip|ankle|toe/.test(g)) b.exc[2 * j.i] = 1; else if (g === 'knee') b.exc[2 * j.i + 1] = 1;
+            else if (j.spec.group === 'trunk') { b.exc[2 * j.i] = 0.3; b.exc[2 * j.i + 1] = 0.3; }   // back and neck braced
+          }
+        };
       }, b => {
         b.setHarness(true, 0, true);
-        const steer = (out, ov) => B.Biped.prototype.act.call(b, new Float32Array(21), ov, { kp: 6, kd: 0.4, co: 0.1 });
+        const steer = (out, ov) => B.Biped.prototype.act.call(b, new Float32Array(B.MOTORS), ov, { kp: 6, kd: 0.4, co: 0.1 });
         let t = 0; b.act = () => { t++; const k = Math.min(1, Math.max(0, (t - 10) / 24)), c = crouchFor(depth), ov = {}; for (const id in c) ov[id] = B.REST_POSE[id] + (c[id] - B.REST_POSE[id]) * k; steer(null, ov); };
       });
       best = Math.max(best, rise * 100);

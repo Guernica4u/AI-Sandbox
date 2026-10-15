@@ -15,6 +15,7 @@ require('./node-env.js').load().then(({ mj, Brain, Body2D: B }) => {
   else parent = B.freshBrain(Brain.makeRng(+seed));
   const evo = new Brain.Evolution({ sizes: B.SIZES, popSize: 48, seed: +seed + (saved ? saved.generation : 0), sigma: saved ? saved.sigma : 0.15,
     parent, outputGroups: B.OUTPUT_GROUPS, generation: saved ? saved.generation : 0, history: saved ? saved.history : [] });
+  let stage = saved && typeof saved.stage === 'number' ? saved.stage : 0;   // difficulty: rises only while the best brain copes
   const check = (params, g) => {
     let ok = 0; const hard = B.hardness(g);
     for (let k = 0; k < 10; k++) {
@@ -27,13 +28,15 @@ require('./node-env.js').load().then(({ mj, Brain, Body2D: B }) => {
   console.log(`${skill}: generation ${evo.generation} → ${end}`);
   while (evo.generation < end) {
     const t1 = Date.now();
-    evo.tell(B.evaluate(mj, skill, evo.population, evo.generation));
+    const r = B.evaluate(mj, skill, evo.population, stage, evo.generation, true);
+    stage = B.nextStage(stage, r.successRate);
+    evo.tell(r.scores);
     if (evo.generation % 10 === 0 || evo.generation === end) {
-      const tr = new B.Trial(mj, skill, [evo.best], { seed: 5, hard: B.hardness(evo.generation), terrainLevel: B.terrainLevel(evo.generation), earlyStop: false });
+      const tr = new B.Trial(mj, skill, [evo.best], { seed: 5, hard: B.hardness(stage), terrainLevel: B.terrainLevel(stage), earlyStop: false });
       tr.run(); const a = tr.agents[0];
-      console.log(`gen ${evo.generation} · best ${evo.bestFitness.toFixed(2)} · level ${(B.hardness(evo.generation) * 100).toFixed(0)}% · ${B.TASKS[skill].describe(a.st, a.body)} · check ${check(evo.best, evo.generation)}/10 · ${((Date.now() - t1) / 1000).toFixed(1)} s/gen · ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+      console.log(`gen ${evo.generation} · best ${evo.bestFitness.toFixed(2)} · stage ${stage.toFixed(1)} (level ${(B.hardness(stage) * 100).toFixed(0)}%) · ${B.TASKS[skill].describe(a.st, a.body)} · check ${check(evo.best, stage)}/10 · ${((Date.now() - t1) / 1000).toFixed(1)} s/gen · ${((Date.now() - t0) / 60000).toFixed(1)} min`);
       tr.free();
-      fs.writeFileSync(file, JSON.stringify({ skill, bodyPlan: B.BIPED.id, sizes: B.SIZES, generation: evo.generation, sigma: evo.sigma, history: evo.history, params: Array.from(evo.best) }));
+      fs.writeFileSync(file, JSON.stringify({ skill, bodyPlan: B.BIPED.id, sizes: B.SIZES, generation: evo.generation, stage, sigma: evo.sigma, history: evo.history, params: Array.from(evo.best) }));
     }
   }
 });

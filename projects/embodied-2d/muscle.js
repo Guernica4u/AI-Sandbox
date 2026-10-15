@@ -82,9 +82,14 @@ const MUSCLES = {
   ankle:    { up: [40, 0.04, 0.20, 0.04], down: [150, 0.05, 0.25, 0.06], mid: -0.2 },    // shin / calf with Achilles
   shoulder: { up: [60, 0.03, 0.05, 0.04], down: [60, 0.03, 0.05, 0.04], mid: 1.0 },
   elbow:    { up: [55, 0.03, 0.10, 0.04], down: [40, 0.03, 0.10, 0.04], mid: 1.25 },     // biceps / triceps
+  toe:      { up: [10, 0.02, 0.10, 0.04], down: [25, 0.02, 0.15, 0.05], mid: 0.2 },      // toe extensors / toe flexors
+  // back and neck muscles attach through long, flat tendon sheets (aponeuroses), so their tendons are long and springy
+  lumbar:   { up: [200, 0.05, 0.20, 0.05], down: [150, 0.08, 0.20, 0.05], mid: -0.25 },  // lower back extensors / abdominals
+  thoracic: { up: [100, 0.04, 0.15, 0.05], down: [70, 0.06, 0.15, 0.05], mid: -0.1 },    // upper back / upper abdominals
+  neck:     { up: [30, 0.03, 0.12, 0.05], down: [20, 0.025, 0.12, 0.05], mid: -0.05 },   // neck extensors / flexors
 };
-const RANGE = { hip: [-0.6, 1.9], knee: [-2.3, 0], ankle: [-0.75, 0.35], shoulder: [-1, 3], elbow: [0, 2.5] };
-const TOPSPEED = { hip: 15, knee: 20, ankle: 20, shoulder: 20, elbow: 25 };   // human joint top speeds (rad/s)
+const RANGE = { hip: [-0.6, 1.9], knee: [-2.3, 0], ankle: [-0.75, 0.35], shoulder: [-1, 3], elbow: [0, 2.5], toe: [-0.5, 1.0], lumbar: [-0.9, 0.4], thoracic: [-0.4, 0.2], neck: [-0.7, 0.6] };
+const TOPSPEED = { hip: 15, knee: 20, ankle: 20, shoulder: 20, elbow: 25, toe: 15, lumbar: 8, thoracic: 8, neck: 10 };   // human joint top speeds (rad/s)
 const SPEED = 2.0;          // calibration: the model's joints then reach human top speeds (knee ~23, hip ~19, ankle ~15 rad/s
                             // unloaded); fibre damping and the tendons make the effective speed lower than the fibre vmax
 const EXCURSION = 0.35;     // a full joint sweep keeps fibres within ±35% of ideal length (real fibres are pennate)
