@@ -47,7 +47,7 @@ const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
    per part; com = centre of mass offset along the part. side: 'L' limbs are drawn behind the trunk, 'R' in front.
    The trunk bends: pelvis, belly and chest with two spine joints, and the head sits on a neck. Each foot has toes.   */
 const BIPED = {
-  id: 'biped2d-v6',           // v6: MuJoCo, muscle pairs; spine, neck and head, toes; human senses with nerve delays, stretch reflex
+  id: 'biped2d-v7',           // v7: MuJoCo, muscle pairs; spine, neck, toes; human senses, nerve delays, stretch reflex; one shared brain
   root: 'pelvis',
   parts: [
     { id: 'pelvis', shape: 'box', hx: 0.12, hy: 0.09, x: 0, y: 1.00, mass: 9.5, inertia: 0.0713 },
@@ -101,22 +101,26 @@ const ROOT_Y = BIPED.parts.find(p => p.id === BIPED.root).y;   // pelvis height 
      4  task inputs, seen (target dx, dy, holding, extra)
      8  ground height ahead, seen (from 0.1 m to 1.2 m in front)
      3  energy left, leg tiredness, arm tiredness (felt)
+     3  what it's trying to do: walk to food, jump for fruit, pick up the glass (none of them: just stand)
+   One brain does every skill (see the shared brain below), so it needs to know which one it's on.
    Nerve delays: every sense arrives late by a realistic amount (SENSE_DELAY), and commands reach the muscles late
    (MOTOR_DELAY). A spinal stretch reflex tenses a muscle that's suddenly stretched, without the brain (Biped.stepPhysics).
    What the brain sets: 30 muscle excitations (0..1; negative = 0), then grip (-1..1).        */
 const AHEAD = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0, 1.2];
-const SENSE_LIST = [['ear', 5], ['sight', 2], ['joints', NJ], ['spindles', NM], ['tendons', NM], ['pressure', 6], ['clock', 2], ['task', 4], ['ahead', AHEAD.length], ['inner', 3]];
+const SKILLS = ['stand', 'walk', 'jump', 'grab'];
+const INTENTS = ['walk', 'jump', 'grab'];   // stand is the absence of any of these
+const SENSE_LIST = [['ear', 5], ['sight', 2], ['joints', NJ], ['spindles', NM], ['tendons', NM], ['pressure', 6], ['clock', 2], ['task', 4], ['ahead', AHEAD.length], ['inner', 3], ['intent', INTENTS.length]];
 const SENSE_AT = (() => { let i = 0; const at = {}; for (const [k, n] of SENSE_LIST) { at[k] = i; i += n; } at.total = i; return at; })();
-const SENSES = SENSE_AT.total;                                 // 105
+const SENSES = SENSE_AT.total;                                 // 108
 /* Nerve delays in brain steps (1 step = 17 ms): the inner ear is close to the brain (17 ms), legs and feet are far
    (33 ms), arms and trunk in between (17 ms), the eyes are slow (100 ms), feeling tired is slower still (50 ms).    */
-const DELAY = { ear: 1, sight: 6, legs: 2, trunk: 1, arms: 1, touch: 2, clock: 0, task: 6, ahead: 6, inner: 3 };
+const DELAY = { ear: 1, sight: 6, legs: 2, trunk: 1, arms: 1, touch: 2, clock: 0, task: 6, ahead: 6, inner: 3, intent: 0 };
 const SENSE_DELAY = (() => {
   const d = new Int8Array(SENSES), jointDelay = j => DELAY[BIPED.joints[j].group];
   const fill = (k, f) => { for (let i = 0; i < SENSE_LIST.find(e => e[0] === k)[1]; i++) d[SENSE_AT[k] + i] = f(i); };
   fill('ear', () => DELAY.ear); fill('sight', () => DELAY.sight); fill('joints', jointDelay);
   fill('spindles', m => jointDelay(m >> 1)); fill('tendons', m => jointDelay(m >> 1)); fill('pressure', () => DELAY.touch);
-  fill('clock', () => DELAY.clock); fill('task', () => DELAY.task); fill('ahead', () => DELAY.ahead); fill('inner', () => DELAY.inner);
+  fill('clock', () => DELAY.clock); fill('task', () => DELAY.task); fill('ahead', () => DELAY.ahead); fill('inner', () => DELAY.inner); fill('intent', () => DELAY.intent);
   return d;
 })();
 /** Motor nerve delays, per muscle (and the grip): commands to the legs take 33 ms, to the trunk and arms 17 ms. */
@@ -126,7 +130,7 @@ const HIST = 8;   // brain steps of history kept for the delays
 // down in a muscle while its opposite muscle is being driven (reciprocal inhibition), so it doesn't fight movements
 const REFLEX = { gain: 0.8, threshold: 0.02 };
 const MOTORS = NM + 1;                                         // 30 muscles + grip
-const SIZES = [SENSES, 32, MOTORS];
+const SIZES = [SENSES, 48, MOTORS];   // one brain for every skill, so a little more room than a one-skill brain
 // output groups for Evolution (half the mutations touch only one group): leg muscles, trunk and neck muscles, arm muscles + grip
 const muscleGroup = g => BIPED.joints.flatMap((j, i) => j.group === g ? [2 * i, 2 * i + 1] : []);
 const OUTPUT_GROUPS = [muscleGroup('legs'), muscleGroup('trunk'), muscleGroup('arms').concat(NM)];
@@ -275,6 +279,7 @@ class Biped {
     const tx = this.head.translation().x;
     for (const d of AHEAD) out[i++] = this.groundAt(tx + d) * 5;                              // what's on the ground ahead
     out[i++] = this.energyLeft / this.energyMax; out[i++] = this.tiredness('legs'); out[i++] = this.tiredness('arms');
+    for (const k of INTENTS) out[i++] = this.intent === k ? 1 : 0;                           // what it's trying to do
     return out;
   }
   /** Fills out[] with what the brain gets: each sense as it was SENSE_DELAY brain steps ago (see SENSES). */
@@ -771,7 +776,7 @@ class Trial {
     this.agents = brains.map(params => {
       const data = new mj.MjData(this.model);
       const body = new Biped(mj, this.model, data, Object.assign({ terrain: this.terrain, energy: this.energy }, this.task.body, opts.body));
-      body.push(push);
+      body.push(push); body.intent = taskId;
       const st = this.task.setup(body, this.variant, this.hard, this);
       return { data, body, st, net: new Brain.Network(SIZES, params), done: false };
     });
@@ -876,6 +881,49 @@ function combineScores(perEpisode) {
     return m - 0.25 * (Math.max(...fs) - Math.min(...fs));
   });
 }
+/* ---------- the shared brain: one brain per agent, for every skill ----------
+   A person doesn't have a separate brain for standing and walking: what they learn standing is used whenever they
+   stand, walking included. So each agent has one brain. Each generation it's tested on the skill being learned and,
+   once each, on every skill it already practises, so it doesn't forget them. Every skill has its own difficulty
+   stage (it rises only while the agent copes with that skill). Scores are made comparable across skills by ranking:
+   in every attempt, the best of the 48 variations gets 1 and the worst 0.                                          */
+/** The attempts for one generation: { taskId, cfg } for the focus skill (its usual 2-3) and one of each other practised skill. */
+function mixedEpisodes(stages, focus, generation) {
+  const out = [];
+  for (const k of SKILLS) {
+    if (typeof stages[k] !== 'number') continue;
+    const eps = episodeConfigs(k, stages[k], generation);
+    for (const cfg of (k === focus ? eps : eps.slice(0, 1))) out.push({ taskId: k, cfg });
+  }
+  return out;
+}
+/** Scores per attempt -> one score per brain: the mean of its rank in each attempt, minus a little for inconsistency. */
+function combineMixed(perEpisode) {
+  const n = perEpisode[0].length, ranked = perEpisode.map(sc => {
+    const order = sc.map((s, i) => i).sort((a, b) => sc[a] - sc[b]), r = new Float64Array(n);
+    order.forEach((i, k) => { r[i] = n > 1 ? k / (n - 1) : 1; });
+    return r;
+  });
+  return Array.from({ length: n }, (_, i) => { const v = ranked.map(r => r[i]), m = v.reduce((s, x) => s + x, 0) / v.length; return m - 0.25 * (Math.max(...v) - Math.min(...v)); });
+}
+/** After a generation: each practised skill's next stage, from how often the best brain succeeded at it. */
+function nextStages(stages, episodes, combined, successesPerEpisode) {
+  let best = 0; for (let i = 1; i < combined.length; i++) if (combined[i] > combined[best]) best = i;
+  const out = Object.assign({}, stages);
+  for (const k of Object.keys(stages)) {
+    const mine = episodes.map((e, i) => e.taskId === k ? i : -1).filter(i => i >= 0);
+    if (mine.length) out[k] = nextStage(stages[k], mine.reduce((s, i) => s + (successesPerEpisode[i][best] ? 1 : 0), 0) / mine.length);
+  }
+  return out;
+}
+/** One generation of the shared brain, scored on one CPU core: { scores, stages }. */
+function evaluateMixed(mj, population, stages, focus, generation) {
+  const eps = mixedEpisodes(stages, focus, generation), per = [], ok = [];
+  for (const e of eps) { const tr = new Trial(mj, e.taskId, population, e.cfg); per.push(tr.run()); ok.push(tr.successes()); tr.free(); }
+  const scores = combineMixed(per);
+  return { scores, stages: nextStages(stages, eps, scores, ok) };
+}
+
 /** Scores a whole population in one go (used for training outside the page, e.g. in Node).
     Returns the scores; with full = true, { scores, successRate } (the best brain's share of successful attempts). */
 function evaluate(mj, taskId, population, stage, generation = stage, full = false) {
@@ -888,7 +936,7 @@ function evaluate(mj, taskId, population, stage, generation = stage, full = fals
   return full ? { scores, successRate: bestSuccess(scores, ok) } : scores;
 }
 
-const api = { DT, SUB, BIPED, ROOT_Y, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTOR_DELAY, DELAY, REFLEX, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, FRUIT, fruitSpot, TASKS, Biped, Part, Trial,
+const api = { SKILLS, INTENTS, mixedEpisodes, combineMixed, nextStages, evaluateMixed, DT, SUB, BIPED, ROOT_Y, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTOR_DELAY, DELAY, REFLEX, MOTORS, SIZES, OUTPUT_GROUPS, AHEAD, GLASS, GRIP_REACH, TABLE, FRUIT, fruitSpot, TASKS, Biped, Part, Trial,
   freshBrain, hardness, gripAssist, terrainLevel, nextStage, bestSuccess, transferBrain, episodeConfigs, combineScores, evaluate, worldXML,
   distToBox, wrap, makeTerrain, terrainHeight, POSE_KEYS, REST_POSE, REFERENCE, clipPose, poseParts, BALANCE, IDEAL_SERVO, idealPose, idealOver, idealCheck,
   BASAL_W, MAINT, WORK_COST, TIRE, RECOVER, JOINT_DAMPING, JOINT_LIMIT_SOFTNESS };

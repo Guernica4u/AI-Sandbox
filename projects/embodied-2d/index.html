@@ -32,7 +32,8 @@
  AGENT FILE FORMAT  (format "glassbox-body-agent", formatVersion 1)
  { "format": "glassbox-body-agent", "formatVersion": 1, "app": "Glass Box",
    "name": "Kit", "seed": 1, "bodyPlan": "biped2d-v3",
-   "skills": { "stand": <glassbox-body-brain>, "walk": ..., "grab": ... } }
+   "brain": <glassbox-body-brain with "skill": "all" and "stages": { "stand": 37, "walk": 0 }> }
+   One shared brain per agent does every skill; "stages" are the skills it practises and each one's difficulty.
  A single "glassbox-body-brain" file (see brain.js) can also be imported.
 ================================================================================
 -->
@@ -263,49 +264,50 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const { Network, Evolution, makeRng, brainToJSON, brainFromJSON } = Brain;
-const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, FRUIT, fruitSpot, Trial, hardness, gripAssist, terrainLevel, nextStage, bestSuccess, transferBrain, episodeConfigs, combineScores, wrap,
+const { DT, BIPED, SIZES, freshBrain, MOTORS, TASKS, GLASS, TABLE, FRUIT, fruitSpot, Trial, hardness, gripAssist, terrainLevel, mixedEpisodes, combineMixed, nextStages, wrap,
   } = Body2D;
 let R = null;
 
 const SKILLS = ['stand', 'walk', 'jump', 'grab'];
 const SKILL_NOTES = {
   stand: '<strong>Stand.</strong> Stay upright and in place while something shoves you every 2 seconds. Sitting, kneeling and the splits count as falling. Scored on time on your feet, minus drifting and a too-wide stance.',
-  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. Sticks (drag your feet and you trip) and logs appear as training goes on. Starts from the agent\'s Stand brain.',
-  jump: '<strong>Jump for fruit.</strong> A fruit hangs just out of reach. Touch it with either hand, then land and stay on your feet. At first it hangs just within reach of a raised arm; as training goes on it hangs about 30 cm higher, so only a real jump gets it. Muscles here get weaker the faster they move, like real ones, so the jump is about as high as a person\'s. Starts from the Stand brain.',
-  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a free-standing table (lean on it and it slides, bump it and it tips). Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Early on the hand closes automatically on touch; that help fades out by generation 200. Starts from the Stand brain.',
+  walk: '<strong>Walk to food.</strong> Food lies 6 to 10 m away and the energy store is limited: a wasteful way of walking runs out before it gets there. Getting there with energy left scores more. Sticks (drag your feet and you trip) and logs appear as training goes on. Uses the agent\'s one brain, which keeps practising its other skills.',
+  jump: '<strong>Jump for fruit.</strong> A fruit hangs just out of reach. Touch it with either hand, then land and stay on your feet. At first it hangs just within reach of a raised arm; as training goes on it hangs about 30 cm higher, so only a real jump gets it. Muscles here get weaker the faster they move, like real ones, so the jump is about as high as a person\'s. Uses the agent\'s one brain, which keeps practising its other skills.',
+  grab: '<strong>Pick up the glass.</strong> A glass of water stands on a free-standing table (lean on it and it slides, bump it and it tips). Reach, touch, close the hand, lift, keep it upright (tip it past 50° and it spills). Early on the hand closes automatically on touch; that help fades out as the agent gets better. Uses the agent\'s one brain, which keeps practising its other skills.',
 };
 const COLORS = ['#4fd1c5', '#e0a458', '#c65bd9', '#7bc96f', '#58a6ff', '#ef6a5b'];
 const NAMES = ['Nova', 'Ivy', 'Rook', 'Sol', 'Wren', 'Oak', 'Lumen', 'Moss', 'Echo', 'Tarn', 'Vale'];
 
 /* ================= agents & storage ================= */
-const LS_KEY = 'glassbox-embodied2d/v4m';   // v4m: MuJoCo + muscle body (older agents don't fit it)
+const LS_KEY = 'glassbox-embodied2d/v7';   // v7: MuJoCo, realistic muscles and senses, one shared brain (older agents don't fit it)
 const App = { agents: [], agentId: null, skill: 'stand', mode: 'watch', dirty: false };
 const newId = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-function skillFromBrain(b) { return { params: b.params, generation: b.generation, stage: b.stage, sigma: b.sigma, seed: b.seed, symmetric: !!b.symmetric, springy: !!b.springy, history: b.history || [], created: b.created, updated: b.updated }; }
-function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], skills: {}, tests: {} }; }
+/* Each agent has ONE brain for every skill (a.brain), with a difficulty stage per skill it practises (a.brain.stages).
+   skillOf(a, k) is that brain seen from one skill (null if the agent doesn't practise it yet). */
+function sharedFromBrain(b) { return { params: b.params, generation: b.generation, stages: b.stages || { stand: 0 }, sigma: b.sigma, seed: b.seed, history: b.history || [], created: b.created, updated: b.updated }; }
+function skillOf(a, k) { const b = a.brain; return b && typeof b.stages[k] === 'number' ? { params: b.params, generation: b.generation, stage: b.stages[k], sigma: b.sigma, seed: b.seed, history: b.history } : null; }
+function blankAgent(name, i, seed) { return { id: newId(), name, seed: seed >>> 0 || ((Math.random() * 1e9) >>> 0), color: COLORS[i % COLORS.length], brain: null, tests: {} }; }
 function agentFromStarter(name, data, i) {
   const a = blankAgent(name, i, 0);
-  for (const k of SKILLS) if (data[k]) { const r = brainFromJSON(data[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) a.skills[k] = skillFromBrain(r.brain); }
-  a.seed = (a.skills.stand && a.skills.stand.seed) || i + 1; a.starter = true;
+  if (data.brain) { const r = brainFromJSON(data.brain); if (r.ok && r.brain.bodyPlan === BIPED.id && r.brain.sizes.join() === SIZES.join() && r.brain.stages) a.brain = sharedFromBrain(r.brain); }
+  a.seed = (a.brain && a.brain.seed) || i + 1; a.starter = true;
   return a;
 }
-function skillToBrainJSON(a, skill) {
-  const s = a.skills[skill];
-  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill, sizes: SIZES, params: s.params, generation: s.generation, stage: stageOf(s), sigma: s.sigma, seed: s.seed, symmetric: s.symmetric, springy: s.springy, history: s.history, created: s.created, updated: s.updated });
+function brainJSONOf(a) {
+  const s = a.brain;
+  return brainToJSON({ name: a.name, bodyPlan: BIPED.id, skill: 'all', stages: s.stages, sizes: SIZES, params: s.params, generation: s.generation, sigma: s.sigma, seed: s.seed, symmetric: s.symmetric, springy: s.springy, history: s.history, created: s.created, updated: s.updated });
 }
 function agentToJSON(a) {
-  const skills = {};
-  for (const k of SKILLS) if (a.skills[k]) skills[k] = skillToBrainJSON(a, k);
   return { format: 'glassbox-body-agent', formatVersion: 1, app: 'Glass Box', exportedAt: new Date().toISOString(), name: a.name, seed: a.seed, color: a.color,
-    bodyPlan: BIPED.id, starter: !!a.starter, skills, tests: a.tests };
+    bodyPlan: BIPED.id, starter: !!a.starter, brain: a.brain ? brainJSONOf(a) : null, tests: a.tests };
 }
 function agentFromJSON(j, i) {
   if (!j || j.format !== 'glassbox-body-agent' || j.formatVersion > 1) return null;
   const a = blankAgent(String(j.name || 'Agent').slice(0, 24), i, j.seed);
   if (/^#[0-9a-f]{6}$/i.test(j.color)) a.color = j.color;
   a.starter = !!j.starter;
-  if (j.bodyPlan === BIPED.id) for (const k of SKILLS) if (j.skills && j.skills[k]) { const r = brainFromJSON(j.skills[k]); if (r.ok && r.brain.sizes.join() === SIZES.join()) a.skills[k] = skillFromBrain(r.brain); }
+  if (j.bodyPlan === BIPED.id && j.brain) { const r = brainFromJSON(j.brain); if (r.ok && r.brain.sizes.join() === SIZES.join() && r.brain.stages) a.brain = sharedFromBrain(r.brain); }
   for (const k of SKILLS) {
     if (j.tests && j.tests[k] && typeof j.tests[k].ok === 'number') a.tests[k] = j.tests[k];
   }
@@ -320,7 +322,7 @@ function saveAll() {
 }
 function starterAgents(offset) {
   const st = window.EMBODIED_STARTERS || {};
-  return Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i + offset)).filter(a => Object.keys(a.skills).length);   // only examples trained for this body
+  return Object.keys(st).map((n, i) => agentFromStarter(n, st[n], i + offset)).filter(a => a.brain);   // only examples trained for this body
 }
 function loadAll() {
   let d = null;
@@ -344,24 +346,18 @@ const agent = () => App.agents.find(a => a.id === App.agentId);
 function markDirty() { App.dirty = true; $('#saveStatus').textContent = 'unsaved'; }
 function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms); }
 
-/** The brain an agent uses for a skill. Walk, jump and grab start from the stand brain (with unused senses cut). */
+/** The brain an agent uses: its one shared brain, or a fresh one if it has never trained. */
 function brainFor(a, skill) {
-  const own = a.skills[skill], st = a.skills.stand;
-  if (own) return { params: own.params, from: skill, symmetric: !!own.symmetric, springy: !!own.springy };
-  if (skill !== 'stand' && st) return { params: transferBrain(st.params, 'stand', skill), from: 'stand', symmetric: !!st.symmetric, springy: !!st.springy };
-  return { params: freshBrain(makeRng(a.seed * 977 + skill.length), SPRINGY_DEFAULT), from: null, symmetric: SYMMETRIC_DEFAULT, springy: SPRINGY_DEFAULT };
+  if (a.brain) return { params: a.brain.params, from: 'shared' };
+  if (!a.freshParams) a.freshParams = freshBrain(makeRng(a.seed * 977 + 1));
+  return { params: a.freshParams, from: null };
 }
-// New brains get mirror-symmetric legs (one shared circuit for both legs, half a step apart).
-// Brains trained without it (like ones imported from before) keep running the way they were trained.
-const SYMMETRIC_DEFAULT = false;   // tested: no better success or gait than free legs, so off by default
-// New brains get springy knees (see body2d.js). Brains trained with the old stiff knees keep them.
-const SPRINGY_DEFAULT = true;
-/** A skill's difficulty stage (brains from before stages existed: their generation, as the old schedule had it). */
-const stageOf = s => s ? (typeof s.stage === 'number' ? s.stage : s.generation) : 0;
+/** A skill's difficulty stage (0 if the agent doesn't practise it yet). */
+const stageOf = s => s ? s.stage : 0;
 /** Curriculum settings for watching or testing a skill at its current level. */
 function levelOpts(a, skill) {
-  const g = a.skills[skill] ? stageOf(a.skills[skill]) : 0, hard = hardness(g);
-  return { hard, terrainLevel: terrainLevel(g), assist: skill === 'grab' ? gripAssist(g) : 0, noise: 0.02 * hard, symmetric: brainFor(a, skill).symmetric, springy: brainFor(a, skill).springy };
+  const g = stageOf(skillOf(a, skill)), hard = hardness(g);
+  return { hard, terrainLevel: terrainLevel(g), assist: skill === 'grab' ? gripAssist(g) : 0, noise: 0.02 * hard };
 }
 
 /* ================= watching ================= */
@@ -412,7 +408,7 @@ const Check = {
   finish() {
     this.trial.free(); this.trial = null; this.running = false; $('#checkBtn').disabled = false;
     const a = App.agents.find(x => x.id === this.agentId);
-    if (a) { a.tests[this.skill] = { ok: this.ok, n: this.n, generation: a.skills[this.skill] ? a.skills[this.skill].generation : 0, level: this.opts.hard }; markDirty(); }
+    if (a) { a.tests[this.skill] = { ok: this.ok, n: this.n, generation: a.brain ? a.brain.generation : 0, level: this.opts.hard }; markDirty(); }
     renderStatus();
     toast(`${this.ok} of ${this.n} runs: ${TASKS[this.skill].successText}`);
   },
@@ -429,7 +425,7 @@ function __trainerWorker() {
     if (m.type !== 'run') return;
     const genomes = m.genomes.map(g => new Float32Array(g));
     const scores = [], successes = [];
-    for (const cfg of m.configs) { const t = new Body2D.Trial(self.MJ, m.taskId, genomes, cfg); scores.push(t.run()); successes.push(t.successes()); t.free(); }
+    for (const e of m.episodes) { const t = new Body2D.Trial(self.MJ, e.taskId, genomes, e.cfg); scores.push(t.run()); successes.push(t.successes()); t.free(); }
     self.postMessage({ type: 'done', id: m.id, scores, successes });
   };
 }
@@ -458,8 +454,8 @@ const Pool = {
     if (this.workers) for (const w of this.workers) w.terminate();
     this.workers = null;
   },
-  /** Score a whole population: split it across the workers, every worker runs every episode on its share. */
-  run(taskId, configs, population) {
+  /** Score a whole population: split it across the workers, every worker runs every attempt ({ taskId, cfg }) on its share. */
+  run(episodes, population) {
     const n = this.workers.length, per = Math.ceil(population.length / n), jobs = [];
     for (let w = 0; w < n; w++) {
       const chunk = population.slice(w * per, (w + 1) * per);
@@ -467,27 +463,32 @@ const Pool = {
       const id = this.nextId++;
       jobs.push(new Promise((resolve, reject) => {
         this.pending[id] = { resolve, reject };
-        this.workers[w].postMessage({ type: 'run', id, taskId, configs, genomes: chunk.map(g => Array.from(g)) });
+        this.workers[w].postMessage({ type: 'run', id, episodes, genomes: chunk.map(g => Array.from(g)) });
       }));
     }
     return Promise.all(jobs).then(parts => ({
-      scores: configs.map((_, e) => [].concat(...parts.map(p => p.scores[e]))),
-      successes: configs.map((_, e) => [].concat(...parts.map(p => p.successes[e]))) }));
+      scores: episodes.map((_, e) => [].concat(...parts.map(p => p.scores[e]))),
+      successes: episodes.map((_, e) => [].concat(...parts.map(p => p.successes[e]))) }));
   },
 };
 
 /* ================= training ================= */
 const Train = {
-  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], okEpisode: [], stage: 0, trial: null, budget: 12,
-  speed: 'pool', mode: 'main', token: 0, demo: null, demoEnd: 0, symmetric: false, springy: false, lastGenAt: 0, genSecs: 0,
+  running: false, evo: null, skill: null, agentId: null, episodes: [], ep: 0, perEpisode: [], okEpisode: [], stages: {}, trial: null, budget: 12,
+  speed: 'pool', mode: 'main', token: 0, demo: null, demoEnd: 0, lastGenAt: 0, genSecs: 0,
+  get stage() { return this.stages[this.skill] || 0; },
   start() {
     if (this.running) this.stop();
-    const a = agent(), s = a.skills[App.skill], from = brainFor(a, App.skill);
-    this.skill = App.skill; this.agentId = a.id; this.symmetric = from.symmetric; this.springy = from.springy; this.stage = stageOf(s);
-    this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (s ? s.seed : a.seed * 31 + App.skill.length) + (s ? s.generation : 0), sigma: s ? s.sigma : 0.15,
-      parent: from.params, generation: s ? s.generation : 0, history: s ? s.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
-    if (!s && from.from === 'stand') toast(`Starting ${TASKS[App.skill].name} from ${a.name}'s Stand brain`);
-    else if (!s && App.skill !== 'stand') toast(`${a.name} can't stand yet. Training from scratch works, but Stand first is much faster.`, 4000);
+    const a = agent(), b = a.brain, from = brainFor(a, App.skill);
+    this.skill = App.skill; this.agentId = a.id;
+    this.stages = Object.assign({ stand: 0 }, b ? b.stages : {});
+    const isNew = typeof this.stages[App.skill] !== 'number' || !b;
+    if (typeof this.stages[App.skill] !== 'number') this.stages[App.skill] = 0;   // a new skill starts at its easiest
+    this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (b ? b.seed : a.seed * 31) + (b ? b.generation : 0), sigma: b ? b.sigma : 0.15,
+      parent: from.params, generation: b ? b.generation : 0, history: b ? b.history : [], outputGroups: Body2D.OUTPUT_GROUPS });
+    const others = Object.keys(this.stages).filter(k => k !== App.skill).map(k => TASKS[k].name);
+    if (isNew && others.length) toast(`Learning ${TASKS[App.skill].name} with the same brain, still practising ${others.join(', ')}`, 4000);
+    else if (isNew && App.skill !== 'stand' && !(b && typeof b.stages.stand === 'number')) toast(`${a.name} can't stand yet. Learning Stand first is much faster.`, 4000);
     this.running = true; this.token++; this.lastGenAt = performance.now();
     if (this.speed === 'pool' && Pool.ensure()) { this.mode = 'pool'; this.loopPool(this.token); }
     else { if (this.speed === 'pool') toast('Background training isn\'t available in this browser; training on the page instead.'); this.mode = 'main'; this.newGeneration(); }
@@ -504,7 +505,7 @@ const Train = {
   async loopPool(token) {
     while (this.running && token === this.token) {
       let per;
-      try { per = await Pool.run(this.skill, episodeConfigs(this.skill, this.stage, this.evo.generation), this.evo.population); }
+      try { this.episodes = mixedEpisodes(this.stages, this.skill, this.evo.generation); per = await Pool.run(this.episodes, this.evo.population); }
       catch (err) {
         if (token !== this.token) return;
         toast('Background training stopped working; continuing on the page.', 4000);
@@ -514,8 +515,8 @@ const Train = {
       this.perEpisode = per.scores; this.okEpisode = per.successes; this.finishGeneration();
     }
   },
-  newGeneration() { this.episodes = episodeConfigs(this.skill, this.stage, this.evo.generation); this.ep = 0; this.perEpisode = []; this.okEpisode = []; this.newEpisode(); },
-  newEpisode() { if (this.trial) this.trial.free(); this.trial = new Trial(R, this.skill, this.evo.population, this.episodes[this.ep]); },
+  newGeneration() { this.episodes = mixedEpisodes(this.stages, this.skill, this.evo.generation); this.ep = 0; this.perEpisode = []; this.okEpisode = []; this.newEpisode(); },
+  newEpisode() { if (this.trial) this.trial.free(); const e = this.episodes[this.ep]; this.trial = new Trial(R, e.taskId, this.evo.population, e.cfg); },
   tick() {
     if (!this.running || this.mode !== 'main') return;
     const realtime = this.budget <= 1 && App.mode === 'train', until = performance.now() + (App.mode === 'train' ? this.budget : 8);
@@ -529,14 +530,14 @@ const Train = {
     } while (!realtime && performance.now() < until);
   },
   finishGeneration() {
-    const combined = combineScores(this.perEpisode);
-    this.stage = nextStage(this.stage, bestSuccess(combined, this.okEpisode));   // harder only when the best brain copes
+    const combined = combineMixed(this.perEpisode);
+    this.stages = nextStages(this.stages, this.episodes, combined, this.okEpisode);   // each skill gets harder only while the best brain copes
     this.evo.tell(combined);
     const now = performance.now(); this.genSecs = this.genSecs ? this.genSecs * 0.8 + (now - this.lastGenAt) / 1000 * 0.2 : (now - this.lastGenAt) / 1000; this.lastGenAt = now;
     const a = App.agents.find(x => x.id === this.agentId);
     if (a) {
-      const t = new Date().toISOString(), prev = a.skills[this.skill];
-      a.skills[this.skill] = { params: this.evo.best, generation: this.evo.generation, stage: this.stage, sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed, symmetric: this.symmetric, springy: this.springy,
+      const t = new Date().toISOString(), prev = a.brain;
+      a.brain = { params: this.evo.best, generation: this.evo.generation, stages: Object.assign({}, this.stages), sigma: this.evo.sigma, seed: prev ? prev.seed : this.evo.seed,
         history: this.evo.history, created: prev ? prev.created : t, updated: t };
       a.starter = false; markDirty();
     }
@@ -936,9 +937,9 @@ function updateJoints() {
 function drawChart() {
   const c = $('#chart'), { ctx, w, h, d } = fit(c);
   ctx.clearRect(0, 0, w, h);
-  const s = agent().skills[App.skill], hist = Train.isShowing() ? Train.evo.history : s ? s.history : [];
+  const s = agent().brain, hist = Train.isShowing() && Train.agentId === App.agentId ? Train.evo.history : s ? s.history : [];
   ctx.font = `${10 * d}px ${css('--mono')}`; ctx.fillStyle = '#5a5f68';
-  if (hist.length < 2) { ctx.fillText('No training yet for this skill.', 6 * d, h / 2); return; }
+  if (hist.length < 2) { ctx.fillText('No training yet.', 6 * d, h / 2); return; }
   const g0 = hist[0][0], g1 = hist[hist.length - 1][0];
   let lo = Infinity, hi = -Infinity;
   for (const [, b, m] of hist) { lo = Math.min(lo, b, m); hi = Math.max(hi, b, m); }
@@ -952,10 +953,10 @@ function drawChart() {
 }
 
 function renderStatus() {
-  const a = agent(), s = a.skills[App.skill], live = Train.isShowing();
-  const gen = live ? Train.evo.generation : s ? s.generation : 0;
+  const a = agent(), s = skillOf(a, App.skill), live = Train.isShowing();
+  const gen = live ? Train.evo.generation : a.brain ? a.brain.generation : 0;
   $('#stGen').textContent = gen;
-  $('#stBest').textContent = live && Train.evo.bestFitness > -Infinity ? Train.evo.bestFitness.toFixed(2) : s && s.history.length ? s.history[s.history.length - 1][1].toFixed(2) : '—';
+  $('#stBest').textContent = live && Train.evo.bestFitness > -Infinity ? Train.evo.bestFitness.toFixed(2) : a.brain && a.brain.history.length ? a.brain.history[a.brain.history.length - 1][1].toFixed(2) : '—';
   const stage = live ? Train.stage : stageOf(s), hd = hardness(stage), parts = [hd >= 1 ? 'full' : `${Math.round(hd * 100)}%`];
   if (App.skill === 'walk') parts.push(`obstacles ${Math.round(terrainLevel(stage) * 100)}%`);
   if (App.skill === 'grab') parts.push(`assist ${Math.round(gripAssist(stage) * 100)}%`);
@@ -967,7 +968,8 @@ function renderStatus() {
     $('#stSuccessNote').textContent = tst ? `${TASKS[App.skill].successText} (gen ${tst.generation})` : 'press Test 10 runs';
   }
   let note = SKILL_NOTES[App.skill];
-  if (!s) note += App.skill !== 'stand' && a.skills.stand ? ' <br><span class="warn">Not trained yet: watching uses the Stand brain.</span>' : ' <br><span class="warn">Not trained yet: this brain is random, so the body just collapses. Train it!</span>';
+  if (!a.brain) note += ' <br><span class="warn">Not trained yet: this brain is random, so the body just collapses. Train it!</span>';
+  else if (!s) note += ` <br><span class="warn">Not practised yet: ${esc(a.name)}'s brain hasn't learned this skill. Train it here; the brain keeps practising what it already knows.</span>`;
   $('#skillNote').innerHTML = note;
 }
 function renderOutcome() {
@@ -982,10 +984,10 @@ function renderOutcome() {
 
 /* ================= UI wiring ================= */
 function refreshAgents() {
-  $('#agentPick').innerHTML = App.agents.map(a => `<option value="${a.id}" ${a.id === App.agentId ? 'selected' : ''}>${esc(a.name)}${a.starter ? ' (trained example)' : Object.keys(a.skills).length ? '' : ' (untrained)'}</option>`).join('');
+  $('#agentPick').innerHTML = App.agents.map(a => `<option value="${a.id}" ${a.id === App.agentId ? 'selected' : ''}>${esc(a.name)}${a.starter ? ' (trained example)' : a.brain ? '' : ' (untrained)'}</option>`).join('');
   $('#skillTabs').innerHTML = SKILLS.map(k => {
-    const s = agent().skills[k];
-    return `<button data-skill="${k}" aria-pressed="${k === App.skill}">${TASKS[k].name}${s ? ` · ${s.generation}` : ''}</button>`;
+    const s = skillOf(agent(), k);
+    return `<button data-skill="${k}" aria-pressed="${k === App.skill}">${TASKS[k].name}${s ? ` · ${Math.round(hardness(s.stage) * 100)}%` : ''}</button>`;
   }).join('');
 }
 function select(changes) {
@@ -1050,9 +1052,9 @@ function wire() {
     if (j.format === 'glassbox-body-brain') {
       const r = brainFromJSON(j);
       if (!r.ok) return toast(r.error);
-      if (r.brain.bodyPlan !== BIPED.id || r.brain.sizes.join() !== SIZES.join() || !SKILLS.includes(r.brain.skill)) return toast('That brain is for a different body, sense layout or skill.');
-      agent().skills[r.brain.skill] = skillFromBrain(r.brain); select({ skill: r.brain.skill });
-      return toast(`Loaded ${r.brain.name}'s ${TASKS[r.brain.skill].name} brain into ${agent().name}.`);
+      if (r.brain.bodyPlan !== BIPED.id || r.brain.sizes.join() !== SIZES.join() || !r.brain.stages) return toast('That brain is for a different body or sense layout.');
+      agent().brain = sharedFromBrain(r.brain); markDirty(); select({});
+      return toast(`Loaded ${r.brain.name}'s brain into ${agent().name}.`);
     }
     const a = agentFromJSON(j, App.agents.length);
     if (!a) return toast('Not a Glass Box Embodied 2D agent file.');

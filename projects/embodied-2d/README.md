@@ -1,13 +1,15 @@
 # Embodied 2D
 
 Agents with physical bodies learn motor skills by themselves. Each body is a
-1.7 m, ~62 kg humanoid seen from the side, with 10 joints (hips, knees,
-ankles, shoulders, elbows; left and right are separate), human-shaped feet
-(heel behind the ankle) and a right hand that can close. Every joint is moved
-by **a pair of realistic muscles**, one bending it and one straightening it.
-A small neural network (49 senses → 32 hidden → 21 outputs) runs 60 times a
-second and sets how hard each of the 20 muscles works, plus the grip. Nothing
-about walking, jumping or grabbing is scripted, and nothing copies a human.
+1.7 m, ~62 kg humanoid seen from the side, with 15 joints: hips, knees,
+ankles and toes, a two-joint spine (pelvis, belly, chest), a neck, shoulders
+and elbows (left and right separate), and a right hand that can close. Every
+joint is moved by **a pair of realistic muscles**, one bending it and one
+straightening it. **One brain per agent** (108 senses → 48 hidden → 31
+outputs) runs 60 times a second, feels what a real body feels, with real
+nerve delays, and sets how hard each of the 30 muscles works, plus the grip.
+Nothing about walking, jumping or grabbing is scripted, and nothing copies a
+human.
 
 Open `index.html` directly (works from `file://`) or through GitHub Pages.
 
@@ -60,6 +62,44 @@ human (knee ~23, hip ~19, ankle ~15 rad/s). A crude jump with every leg muscle
 fully on at once rises ~24 cm (a person's best squat jump is ~30 cm; real
 jumpers fire hips, knees and ankles in sequence).
 
+## Senses and nerves
+
+The brain gets what a person's body actually reports, not exact numbers it
+couldn't know:
+
+| Sense | What | Arrives after |
+|---|---|---|
+| Inner ear (in the head) | tilt, spin, acceleration | 17 ms |
+| Sight | the head's own movement, the target, the ground ahead | 100 ms |
+| Joint position | 15 joint angles | 17-33 ms |
+| Muscle stretch sensors (spindles) | how fast each of the 30 muscles is stretching | 17-33 ms |
+| Tendon force sensors (Golgi organs) | how hard each muscle pulls | 17-33 ms |
+| Touch | under each heel, ball and toe tip | 33 ms |
+| Inside | energy left, tiredness | 50 ms |
+| Intention | which skill it's doing (none = just stand) | none |
+
+Commands take time too: 33 ms to the leg muscles, 17 ms to the trunk and arms,
+on top of the muscles' own switch-on delay. A **spinal stretch reflex** tenses a
+muscle that's suddenly stretched, by itself, ~17 ms later, above a small
+threshold and switched down while its opposite muscle is being driven
+(reciprocal inhibition), as in people. With the brain off (Test mode) the body
+is limp like someone unconscious and the reflexes are off too; otherwise a
+lying body keeps twitching.
+
+## One brain, every skill
+
+A person doesn't have a separate brain for standing and walking. Each agent has
+one brain; learning a new skill keeps practising the old ones: each generation
+is tested on the skill being learned and, once each, on every skill it already
+practises. Scores are ranked within each attempt so skills with bigger numbers
+don't dominate.
+
+**Difficulty rises only when the agent copes.** Every skill has its own stage
+(counted in generations): it goes up when the best brain succeeds in 2 of 3
+attempts, stays while it struggles, and eases a little when it fails every
+attempt. On a fixed timetable, agents with realistic muscles fell behind and
+never caught up; with stages a Stand run reached 8/10 at 47% difficulty.
+
 ## Realism: why they move the way they do
 
 Instead of rewarding a human-looking movement, the agents get the problems that
@@ -85,15 +125,15 @@ shaped human movement, and adapt to them:
 | Jump for fruit | A fruit hangs overhead: touch it with either hand, then land and stay on your feet. It starts just within reach of a raised arm and hangs ~30 cm higher at full difficulty (1.98 m → 2.30 m) | touched the fruit and didn't fall |
 | Pick up the glass | The glass stands on a free-standing table (~8 kg: it slides if you lean on it and tips if you bump it). Reach, touch, close the hand, lift, keep it upright | lifted 10 cm without spilling or knocking the table over |
 
-Walk, Jump and Pick up the glass start from the agent's Stand brain.
+All skills use the agent's one brain (see above).
 
-**Curriculum** (gets harder as the agent improves): shoves, sensor noise and
-energy scarcity reach full strength at generation 150 (energy starts at 5× the
-store); the food moves from 6 m to 9.5–10.5 m; obstacles creep in from
-generation 60 to 400 (sticks up to 3.5 cm, logs up to 9 cm); the grip assist
-(the hand closes on touch) fades from 100% to 0% by generation 200; the fruit
-rises from 1.98 m to 2.30 m by generation 150. Jump allows a deeper crouch
-before it counts as a fall (hips down to 80 cm instead of 98).
+**Curriculum** (by difficulty stage, which only rises while the agent copes):
+shoves, sensor noise and energy scarcity reach full strength at stage 150
+(energy starts at 5× the store); the food moves from 6 m to 9.5–10.5 m;
+obstacles creep in from stage 60 to 400 (sticks up to 3.5 cm, logs up to
+9 cm); the grip assist (the hand closes on touch) fades from 100% to 0% by
+stage 200; the fruit rises from 1.98 m to 2.30 m by stage 150. Jump allows a
+deeper crouch before it counts as a fall (pelvis down to 60 cm instead of 78).
 
 ## The ideal: is a skill possible at all?
 
@@ -144,9 +184,11 @@ On Rapier the same kind of kit gave 7 pass, 5 fail, with feet shaking at
 
 ## Training outside the browser
 
-`node projects/embodied-2d/tools/train.js <skill> <generations> <brain.json> [seed] [from-brain.json]`
-trains with the same code as the page (one CPU core), saves every 10
-generations and continues where it left off. `tools/node-env.js` loads MuJoCo,
+`node projects/embodied-2d/tools/train.js <brain.json> <generations> <skill> [seed] [cores]`
+trains an agent's shared brain with the same code as the page, on all CPU
+cores but one (~1.7 s per generation early on, on 15 cores), saves every 10
+generations and continues where it left off; a new skill is added to the ones
+it practises. `tools/node-env.js` loads MuJoCo,
 the muscles and the body in Node for any script.
 
 ## Things the agents taught us (now handled in the code)
@@ -163,10 +205,10 @@ the muscles and the body in Node for any script.
   and even gripped *through*. The table is now free-standing (it slides and
   tips), and touching the glass from under the table doesn't count.
 - **Balance breaks when the arms learn.** Half the mutations only touch one
-  limb group's outputs (leg muscles, or arm muscles and hand).
-- **A new sense makes an old brain flail.** Starting a new skill cuts
-  connections from senses the old skill never used (`transferBrain`), and
-  relaxes the arms before learning to grab or jump.
+  group's outputs (leg muscles, trunk and neck muscles, or arm muscles and
+  hand).
+- **A new skill made the old one forget.** Separate brains per skill drifted
+  apart; now one brain keeps practising every skill it knows.
 - **Lucky runs** looked like skill. Every brain is tested on the same 2–3
   episodes with random shoves, and inconsistent brains score lower.
 - **Agents learn physics glitches.** On Rapier, Nova walked by using a sliding
@@ -179,7 +221,7 @@ the muscles and the body in Node for any script.
 |---|---|---|
 | `brain.js` | Networks, evolution, brain file format. No physics, no page code. | **Yes, as-is.** |
 | `muscle.js` | Realistic muscles (no physics engine inside) | **Yes, as-is.** |
-| `body2d.js` | Body plan, the MuJoCo world (as MJCF), senses, muscle outputs, energy and fatigue, obstacles, tasks and scoring, reference movements, skill transfer | **Mostly:** MuJoCo is 3D already; the body plan and joint axes change. |
+| `body2d.js` | Body plan, the MuJoCo world (as MJCF), senses and nerve delays, stretch reflex, muscle outputs, energy and fatigue, obstacles, tasks and scoring, the shared brain's training mix and stages, reference movements | **Mostly:** MuJoCo is 3D already; the body plan and joint axes change. |
 | `index.html` | Watch / Train / Test UI, saving | Partly; the renderer becomes three.js. |
 | `starters.js` | Pretrained agents (`window.EMBODIED_STARTERS`); the current ones fit the old body and are hidden | No: brains only fit the body they trained on. |
 | `vendor/mujoco.js` | MuJoCo 3.16.0 (Apache-2.0, see `vendor/LICENSE-mujoco.txt`) as one plain script | Yes. |
