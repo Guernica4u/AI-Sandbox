@@ -204,6 +204,17 @@ harder than friction allows) still happens.
 - **Lucky runs** looked like skill. Every brain is tested on the same 2–3
   episodes with random shoves, and inconsistent brains score lower.
 
+## Physics test kit
+
+`node projects/embodied-2d/tests/physics-kit.js` scores the engine in about a
+minute: ankle shake and creep while standing, creep lying limp, planted-foot
+slide while walking, jump height with and without muscle speed, repeatability,
+the ideal check for every skill, and training speed. Every engine change is
+judged by it before anything is retrained. Baseline (Rapier 2D, 6 solver
+passes, ground-grip fix): 7 pass, 5 fail. The fails are ankle shake (16 rad/s),
+walking foot slide (17 cm/s), superhuman jumps outside Jump (63 cm), and the
+ideal Stand (hardest shove) and Walk.
+
 ## Training outside the browser
 
 `body2d.js` and `brain.js` also load in Node (`module.exports`). Load
