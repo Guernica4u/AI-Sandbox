@@ -76,7 +76,7 @@ const MODELS = [
     plus: ['Same proven layout as A', 'Torso and feet keep their shape but with softened edges and corners', 'Toes for push-off', 'Bigger head (12 cm radius) on a thicker, longer neck'],
     minus: ['No wrists or fingers: the hand is a ball'],
     parts: [
-      rbox([0, 1.00, 0], [0.28, 0.19, 0.185], 0.03), rbox([0, 1.17, 0.005], [0.255, 0.17, 0.17], 0.03), rbox([0, 1.385, 0], [0.335, 0.275, 0.215], 0.035),
+      rbox([0, 1.00, 0], [0.28, 0.19, 0.185], 0.03), rbox([0, 1.17, 0.005], [0.255, 0.17, 0.17], 0.03), rbox([0, 1.38, 0], [0.32, 0.265, 0.205], 0.035),
       cap([0, 1.49, 0], [0, 1.57, 0.005], 0.058), ball([0, 1.675, 0.012], 0.12),
       ...lr(s => [cap(HIP(s), KNEE(s), 0.062), cap(KNEE(s), ANKLE(s), 0.046),
         rbox([s * 0.09, 0.03, 0.03], [0.09, 0.06, 0.165], 0.022, true), rbox([s * 0.09, 0.02, 0.14], [0.085, 0.04, 0.055], 0.016, true)]),
