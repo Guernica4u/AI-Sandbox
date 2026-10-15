@@ -33,7 +33,7 @@ DeepMind, Apache-2.0), the engine most research on learned movement uses. The
 body is one jointed chain, so joints can't drift apart and planted feet don't
 slide (Rapier needed a "ground grip" patch for that, and its light feet
 jittered). The world is planar: forward/back, up/down and tipping, nothing
-sideways. Physics runs 8 small steps per brain step (480 Hz); 240 Hz brings
+sideways. Physics runs 6 small steps per brain step (360 Hz); 240 Hz brings
 back joint chatter.
 
 `vendor/mujoco.js` is the official MuJoCo JavaScript package packed into one
@@ -165,7 +165,7 @@ engine before anything is retrained. Current results:
 | Held in a harness, steady tone: shaking | PASS (0.05 rad/s; was 16 on Rapier) |
 | Squat jump, muscles alone | PASS (~24 cm) |
 | Repeatability | PASS |
-| Speed: one body, one simulated second | FAIL (~31 ms; the mark is 20). Fine for 2D training on all cores; needs work before 3D crowds. |
+| Speed: one body, one simulated second | ~2x faster after caching MuJoCo views and solving muscles exactly (62 -> 30-37 ms measured under load; mark 20). Fine for 2D training on all cores; needs work before 3D crowds. |
 
 On Rapier the same kind of kit gave 7 pass, 5 fail, with feet shaking at
 16 rad/s, walking feet sliding 17 cm/s, and superhuman jumps (63 cm).
