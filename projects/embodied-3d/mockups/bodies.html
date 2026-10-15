@@ -56,6 +56,7 @@ const lr = f => L.flatMap(s => f(s));
 const cap = (a, b, r) => ({ kind: 'cap', a, b, r });
 const box = (c, size, tilt = 0) => ({ kind: 'box', c, size, tilt });
 const ball = (c, r) => ({ kind: 'ball', c, r });
+const ell = (c, radii, dark) => ({ kind: 'ell', c, radii, dark });   // an ellipsoid (MuJoCo simulates these directly)
 const J = (p, dof, name) => ({ p, dof, name });
 
 // shared landmarks (1.70 m adult)
@@ -67,6 +68,20 @@ const leg = (s, toes) => [
   ...(toes ? [box([s * 0.09, 0.02, 0.138], [0.085, 0.04, 0.055])] : []),
 ];
 const MODELS = [
+  {
+    id: 'A+', name: 'A+ · Rounded mannequin (your changes)', blurb: 'Model A with a rounded torso, rounded feet, and a bigger head and neck.',
+    stats: { parts: 14, joints: 13, directions: 29, muscles: 58, cost: '1×' },
+    plus: ['Same proven layout as A', 'Rounded torso (pelvis, belly, chest) and feet: more natural, and they roll and slide on contact like a body does', 'Bigger head (12 cm radius) on a thicker, longer neck'],
+    minus: ['No wrists or fingers: the hand is a ball', 'No toes (the rounded foot rolls through instead)'],
+    parts: [
+      ell([0, 1.00, 0], [0.14, 0.10, 0.095]), ell([0, 1.17, 0.005], [0.125, 0.095, 0.085]), ell([0, 1.38, 0], [0.165, 0.145, 0.105]),
+      cap([0, 1.49, 0], [0, 1.57, 0.005], 0.058), ball([0, 1.675, 0.012], 0.12),
+      ...lr(s => [cap(HIP(s), KNEE(s), 0.062), cap(KNEE(s), ANKLE(s), 0.046), ell([s * 0.09, 0.035, 0.055], [0.047, 0.035, 0.118], true)]),
+      ...lr(s => [cap(SHOULDER(s), ELBOW(s), 0.042), cap(ELBOW(s), WRIST(s), 0.036), ball([s * 0.245, 0.80, 0.015], 0.045)]),
+    ],
+    joints: [J([0, 1.09, 0], 3, 'lower back'), J([0, 1.25, 0], 3, 'upper back'), J([0, 1.53, 0], 3, 'neck'),
+      ...lr(s => [J(HIP(s), 3, 'hip'), J(KNEE(s), 1, 'knee'), J(ANKLE(s), 2, 'ankle'), J(SHOULDER(s), 3, 'shoulder'), J(ELBOW(s), 1, 'elbow')])],
+  },
   {
     id: 'A', name: 'A · Mannequin', blurb: 'Close to the standard humanoid used in robot-learning research.',
     stats: { parts: 14, joints: 13, directions: 29, muscles: 58, cost: '1×' },
@@ -131,7 +146,9 @@ function buildBody(model) {
     } else if (p.kind === 'box') {
       const [w, h, d] = p.size, geo = new THREE.BoxGeometry(w, h, d, 1, 1, 1);
       mesh = new THREE.Mesh(geo, p.c[1] < 0.1 ? skinDark : skin); mesh.position.set(...p.c);
-    } else { mesh = new THREE.Mesh(new THREE.SphereGeometry(p.r, 20, 14), skin); mesh.position.set(...p.c); }
+    } else if (p.kind === 'ell') {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), p.dark ? skinDark : skin); mesh.position.set(...p.c); mesh.scale.set(...p.radii);
+    } else { mesh = new THREE.Mesh(new THREE.SphereGeometry(p.r, 24, 16), skin); mesh.position.set(...p.c); }
     mesh.castShadow = true; g.add(mesh);
   }
   for (const j of model.joints) {
