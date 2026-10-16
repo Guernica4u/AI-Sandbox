@@ -150,6 +150,15 @@ class Reference {
   /** Where in the example it is, 0..1 (the brain's rhythm sense follows it). */
   phase(t) { return this.loop ? (t / this.period) % 1 : Math.min(1, t / this.period); }
 }
+/* How much each joint counts when comparing poses: the legs (what walking and balance are made of) much more than the
+   arms. Scaled so the average joint counts 1, keeping the overall strictness the same. Feet count more among the ends. */
+let _jw = null;
+function JOINT_WEIGHT() {
+  if (_jw) return _jw;
+  const w = B3.BODY.joints.map(j => j.group === 'legs' ? 2 : j.group === 'arms' ? 0.5 : j.id.startsWith('neck') ? 0.4 : 0.6), mean = w.reduce((a, x) => a + x, 0) / w.length;
+  return _jw = Float64Array.from(w, x => x / mean);
+}
+const ENDS = [['footL', 1.6], ['footR', 1.6], ['foreL', 0.5], ['foreR', 0.5], ['head', 0.8]];
 let CLIPS = null;
 const clips = () => CLIPS || (CLIPS = root.MOCAP_CLIPS || (typeof require === 'function' ? require('./mocap/clips.js') : {}));
 
@@ -245,13 +254,14 @@ class Env {
   imitation() {
     const b = this.body, V = b.views(), mj = this.mj, q = this.refPose(this.refT, this.refQ), v = this.refVel(this.refT, this.refV);
     let dp = 0, dv = 0;
-    for (const j of b.joints) { dp += (V.qpos[j.q] - q[j.q]) ** 2; dv += (V.qvel[j.dq] - v[j.q]) ** 2; }
+    const jw = JOINT_WEIGHT();
+    b.joints.forEach((j, i) => { dp += jw[i] * (V.qpos[j.q] - q[j.q]) ** 2; dv += jw[i] * (V.qvel[j.dq] - v[j.q]) ** 2; });
     let dot = 0; for (let k = 3; k < 7; k++) dot += V.qpos[k] * q[k];
     const turn = 2 * Math.acos(Math.min(1, Math.abs(dot))); dp += turn * turn;
     const rd = this.refData; rd.qpos.set(q); mj.mj_kinematics(this.model, rd);
     const xp = V.xpos, rx = rd.xpos, pel = 3 * b.ids.pelvis; let de = 0;
-    for (const part of ['footL', 'footR', 'foreL', 'foreR', 'head']) {
-      const k = 3 * b.ids[part]; for (let a = 0; a < 3; a++) de += ((xp[k + a] - xp[pel + a]) - (rx[k + a] - rx[pel + a])) ** 2;
+    for (const [part, w] of ENDS) {
+      const k = 3 * b.ids[part]; for (let a = 0; a < 3; a++) de += w * ((xp[k + a] - xp[pel + a]) - (rx[k + a] - rx[pel + a])) ** 2;
     }
     const dc = (V.qpos[0] - q[0]) ** 2 + (V.qpos[1] - q[1]) ** 2 + (V.qpos[2] - q[2]) ** 2;
     // DeepMimic's scales are for ~12 ball joints; ours has 31 hinges and 5 tracked parts, so the same strictness made every
