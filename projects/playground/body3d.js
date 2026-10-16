@@ -113,17 +113,20 @@ const SERVO = { kp: 1.5, kd: 0.07, co: 0.15 };   // steering a joint to an angle
 const CONTACT = { body: 'contype="2" conaffinity="3"', ground: 'contype="1" conaffinity="2"' };
 const f = v => +v.toFixed(5), v3 = a => a.map(f).join(' ');
 const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+/** One body's MJCF. opts.prefix names this agent's parts (several agents in one world); opts.at = [x, y, yaw] places it. */
 function bodyXML(opts = {}) {
   const kids = {}; for (const p of BODY.parts) (kids[p.parent || ''] = kids[p.parent || ''] || []).push(p);
+  const px = opts.prefix || '', at = opts.at || [0, 0, 0];
   const geomXML = (p, g) => {
-    const fr = g.friction || (p.foot || p.toes ? 1.1 : 0.7), mass = g.mass !== undefined ? g.mass : p.mass, name = g.name ? ` name="${g.name}"` : '';
+    const fr = g.friction || (p.foot || p.toes ? 1.1 : 0.7), mass = g.mass !== undefined ? g.mass : p.mass, name = g.name ? ` name="${px}${g.name}"` : '';
     if (g.type === 'box') return `<geom${name} type="box" pos="${v3(sub3(g.pos, p.pos))}" size="${v3(g.size)}" mass="${f(mass)}" friction="${fr}" ${CONTACT.body}/>`;
     if (g.type === 'sphere') return `<geom${name} type="sphere" pos="${v3(sub3(g.pos, p.pos))}" size="${g.r}" mass="${f(mass)}" friction="${fr}" ${CONTACT.body}/>`;
     return `<geom${name} type="capsule" fromto="${v3(sub3(g.from, p.pos))} ${v3(sub3(g.to, p.pos))}" size="${g.r}" mass="${f(mass)}" friction="${fr}" ${CONTACT.body}/>`;
   };
-  const jointXML = (j, p) => `<joint name="${j.id}" type="hinge" pos="${v3(sub3(j.at, p.pos))}" axis="${v3(j.axis)}" range="${j.range[0]} ${j.range[1]}" limited="true" armature="${p.toes ? 0.002 : 0.01}" damping="${opts.damping || 0}"/>`;
-  const bodyX = (p, parentPos) => `<body name="${p.id}" pos="${v3(sub3(p.pos, parentPos || [0, 0, 0]))}">` +
-    (p.parent ? BODY.joints.filter(j => j.body === p.id).map(j => jointXML(j, p)).join('') : '<freejoint name="root"/>') +
+  const jointXML = (j, p) => `<joint name="${px}${j.id}" type="hinge" pos="${v3(sub3(j.at, p.pos))}" axis="${v3(j.axis)}" range="${j.range[0]} ${j.range[1]}" limited="true" armature="${p.toes ? 0.002 : 0.01}" damping="${opts.damping || 0}"/>`;
+  const bodyX = (p, parentPos) => (p.parent ? `<body name="${px}${p.id}" pos="${v3(sub3(p.pos, parentPos))}">`
+      : `<body name="${px}${p.id}" pos="${f(p.pos[0] + at[0])} ${f(p.pos[1] + at[1])} ${f(p.pos[2])}" quat="${f(Math.cos((at[2] || 0) / 2))} 0 0 ${f(Math.sin((at[2] || 0) / 2))}">`) +
+    (p.parent ? BODY.joints.filter(j => j.body === p.id).map(j => jointXML(j, p)).join('') : `<freejoint name="${px}root"/>`) +
     p.geoms.map(g => geomXML(p, g)).join('') + (kids[p.id] || []).map(k => bodyX(k, p.pos)).join('') + '</body>';
   return bodyX(BODY.parts.find(p => !p.parent));
 }
@@ -177,17 +180,23 @@ const BASAL_W = 70, MAINT = 1.2, WORK_COST = 4, TIRE = 0.08, RECOVER = 0.05;
 
 /* ---------- one body ---------- */
 class Body3D {
-  /** opts.model: a compiled world to share (one per attempt); otherwise the body gets its own. */
+  /** opts.model: a compiled world to share (one per attempt); otherwise the body gets its own.
+      opts.data: the world's state, shared with other bodies (a village: one world, many agents; the world steps it).
+      opts.prefix: this agent's name prefix in that world. */
   constructor(mj, opts = {}) {
-    this.mj = mj; this.ownModel = !opts.model;
-    this.model = opts.model || mj.MjModel.from_xml_string(worldXML(opts)); this.data = new mj.MjData(this.model);
+    this.mj = mj; this.ownModel = !opts.model; this.sharedData = !!opts.data; const px = this.prefix = opts.prefix || '';
+    this.model = opts.model || mj.MjModel.from_xml_string(worldXML(opts)); this.data = opts.data || new mj.MjData(this.model);
     const id = (t, n) => mj.mj_name2id(this.model, t, n);
-    this.ids = {}; for (const p of BODY.parts) this.ids[p.id] = id(mj.mjtObj.mjOBJ_BODY.value, p.id);
-    this.joints = BODY.joints.map(j => { const k = id(mj.mjtObj.mjOBJ_JOINT.value, j.id); return { spec: j, q: this.model.jnt_qposadr[k], dq: this.model.jnt_dofadr[k], fatigue: 0 }; });
+    this.ids = {}; for (const p of BODY.parts) this.ids[p.id] = id(mj.mjtObj.mjOBJ_BODY.value, px + p.id);
+    this.parts = Int32Array.from(BODY.parts, p => this.ids[p.id]);
+    this.joints = BODY.joints.map(j => { const k = id(mj.mjtObj.mjOBJ_JOINT.value, px + j.id); return { spec: j, q: this.model.jnt_qposadr[k], dq: this.model.jnt_dofadr[k], fatigue: 0 }; });
+    const root = id(mj.mjtObj.mjOBJ_JOINT.value, px + 'root'); this.rq = this.model.jnt_qposadr[root]; this.rd = this.model.jnt_dofadr[root];
     this.nbody = this.model.nbody; this.harness = null; this.time = 0;
-    // task objects: the box (if the world has one) and the two hands' grips on it
+    // things the hands can hold: the box (Pick up and carry), or whatever the world says (opts.graspables: [{ id, shape, size }])
     this.box = id(mj.mjtObj.mjOBJ_BODY.value, 'box');
-    this.gripEq = this.box >= 0 ? { L: id(mj.mjtObj.mjOBJ_EQUALITY.value, 'gripL'), R: id(mj.mjtObj.mjOBJ_EQUALITY.value, 'gripR') } : null;
+    this.graspables = opts.graspables || (this.box >= 0 ? [{ id: this.box, shape: 'box', size: [BOX.hx, BOX.hy, BOX.hz] }] : []);
+    const gl = id(mj.mjtObj.mjOBJ_EQUALITY.value, px + 'gripL'), gr = id(mj.mjtObj.mjOBJ_EQUALITY.value, px + 'gripR');
+    this.gripEq = gl >= 0 && gr >= 0 ? { L: gl, R: gr } : null;
     this.gripCmd = false; this.hold = { L: null, R: null };
     this.mus = makeMuscles3D(); this.exc = new Float64Array(NM); this.mtq = new Float64Array(NM); this.mfat = new Float64Array(NM);
     this.jq = Int32Array.from(this.joints, j => j.q); this.jdq = Int32Array.from(this.joints, j => j.dq);
@@ -207,11 +216,11 @@ class Body3D {
     const v = this._v; if (v && v.qpos.length) return v;
     const d = this.data, m = this.model;
     return this._v = { qpos: d.qpos, qvel: d.qvel, xpos: d.xpos, xquat: d.xquat, xmat: d.xmat, cvel: d.cvel, xfrc: d.xfrc_applied, qfrc: d.qfrc_applied, mass: m.body_mass, damping: m.dof_damping,
-      eqData: this.gripEq ? m.eq_data : null, eqActive: this.gripEq ? d.eq_active : null };
+      eqData: this.gripEq ? m.eq_data : null, eqActive: this.gripEq ? d.eq_active : null, eqObj2: this.gripEq ? m.eq_obj2id : null };
   }
-  savePositions() { const p = this.views().xpos; this.prev.set(p.subarray(0, 3 * this.nbody)); }
+  savePositions() { const p = this.views().xpos, pv = this.prev; for (const b of this.parts) { pv[3 * b] = p[3 * b]; pv[3 * b + 1] = p[3 * b + 1]; pv[3 * b + 2] = p[3 * b + 2]; } }
   /** Hold the pelvis up (on) or let go: springs on its position and tilt, with MuJoCo-applied damping (stable). */
-  setHarness(on) { const V = this.views(); this.harness = on ? { x: V.qpos[0], y: V.qpos[1], z: 1.01 } : null; const d = V.damping; for (let k = 0; k < 6; k++) d[k] = on ? (k < 3 ? 3000 : 200) : 0; if (on) this.fallen = false; }
+  setHarness(on) { const V = this.views(), r = this.rq; this.harness = on ? { x: V.qpos[r], y: V.qpos[r + 1], z: 1.01 } : null; const d = V.damping; for (let k = 0; k < 6; k++) d[this.rd + k] = on ? (k < 3 ? 3000 : 200) : 0; if (on) this.fallen = false; }
   /** A world point of a part from a point in its own frame. */
   worldPoint(partId, lx, ly, lz) {
     const V = this.views(), b = this.ids[partId], m = V.xmat, p = V.xpos, k = 9 * b;
@@ -272,32 +281,44 @@ class Body3D {
   relax() { this.exc.fill(0); this.limp = true; this.gripCmd = false; }
   /** A hand's centre in the world (side 'L' or 'R'). */
   handPos(side) { const a = HAND.at(side === 'L' ? 1 : -1); return this.worldPoint('fore' + side, a[0], a[1], a[2]); }
-  /** How far a world point is from the box's surface (negative = inside), and the point in the box's own frame. */
-  boxDist(p) {
-    const V = this.views(), b = this.box, m = V.xmat, k = 9 * b, d = [p[0] - V.xpos[3 * b], p[1] - V.xpos[3 * b + 1], p[2] - V.xpos[3 * b + 2]];
+  /** How far a world point is from an object's surface (negative = inside), and the point in the object's own frame.
+      obj: { id, shape: 'box' (size: half sizes) | 'sphere' (size: [r]) | 'capsule' (size: [r, half length along its z]) } */
+  objDist(p, obj) {
+    const V = this.views(), b = obj.id, m = V.xmat, k = 9 * b, d = [p[0] - V.xpos[3 * b], p[1] - V.xpos[3 * b + 1], p[2] - V.xpos[3 * b + 2]];
     const l = [m[k] * d[0] + m[k + 3] * d[1] + m[k + 6] * d[2], m[k + 1] * d[0] + m[k + 4] * d[1] + m[k + 7] * d[2], m[k + 2] * d[0] + m[k + 5] * d[1] + m[k + 8] * d[2]];
-    const h = [BOX.hx, BOX.hy, BOX.hz], q = l.map((v, i) => Math.max(Math.abs(v) - h[i], 0));
+    const h = obj.size;
+    if (obj.shape === 'sphere') return { dist: Math.hypot(...l) - h[0], local: l };
+    if (obj.shape === 'capsule') { const z = Math.max(-h[1], Math.min(h[1], l[2])); return { dist: Math.hypot(l[0], l[1], l[2] - z) - h[0], local: l }; }
+    const q = l.map((v, i) => Math.max(Math.abs(v) - h[i], 0));
     const out = Math.hypot(...q), inside = Math.min(...l.map((v, i) => h[i] - Math.abs(v)));
     return { dist: out > 0 ? out : -inside, local: l };
   }
+  /** The box (Pick up and carry). */
+  boxDist(p) { return this.objDist(p, this.graspables.find(g => g.id === this.box)); }
+  /** What a hand is holding (an object's body id), or -1. */
+  heldBy(side) { return this.hold[side] ? this.hold[side].obj : -1; }
   /** Which hands hold the box (0, 1 or 2). */
   holding() { return (this.hold.L ? 1 : 0) + (this.hold.R ? 1 : 0); }
-  /** Close or open the hands: a closing hand that touches the box holds it where it touches (no yank); opening lets go. */
+  /** Close or open the hands: a closing hand that touches something it can hold grips it where it touches (no yank);
+      opening lets go. */
   updateGrip() {
     if (!this.gripEq) return;
     for (const sd of ['L', 'R']) {
       if (!this.gripCmd) { this.hold[sd] = null; continue; }
       if (this.hold[sd]) continue;
-      const hp = this.handPos(sd), bd = this.boxDist(hp);
-      if (bd.dist <= HAND.r + 0.015) this.hold[sd] = HAND.at(sd === 'L' ? 1 : -1).concat(bd.local);
+      const hp = this.handPos(sd); let best = null;
+      for (const g of this.graspables) { if (g.gone) continue; const od = this.objDist(hp, g); if (od.dist <= HAND.r + 0.015 && (!best || od.dist < best.dist)) best = Object.assign(od, { obj: g.id }); }
+      if (best) this.hold[sd] = { obj: best.obj, a: HAND.at(sd === 'L' ? 1 : -1).concat(best.local) };
     }
   }
+  /** Let go of an object (it was eaten, or broke). */
+  dropObject(objId) { for (const sd of ['L', 'R']) if (this.hold[sd] && this.hold[sd].obj === objId) this.hold[sd] = null; }
   /** Writes this body's grips into the (shared) model before each physics sub-step. */
   applyGrip() {
     const V = this.views(), ed = V.eqData, ea = V.eqActive, n = ed.length / this.model.neq;
     for (const sd of ['L', 'R']) {
       const e = this.gripEq[sd], h = this.hold[sd];
-      if (h) for (let k = 0; k < 6; k++) ed[e * n + k] = h[k];
+      if (h) { for (let k = 0; k < 6; k++) ed[e * n + k] = h.a[k]; V.eqObj2[e] = h.obj; }
       ea[e] = h ? 1 : 0;
     }
   }
@@ -316,21 +337,30 @@ class Body3D {
   /** One brain step of physics: SUB sub-steps with the muscles' joint torques (after the motor nerve delay, plus the
       stretch reflex), shoves and the harness. */
   step() {
-    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc, P = this.pending, PT = this.pendingT, nb = this.nbody;
-    const low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));   // running on empty: crippling
+    this.beginStep();
+    for (let n = 0; n < SUB; n++) { this.substep(); this.mj.mj_step(this.model, this.data); }
+    this.endStep();
+  }
+  /** Before a brain step's physics: what the muscles are told (after the nerve delay, plus reflexes), grips. */
+  beginStep() {
+    this.low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));   // running on empty: crippling
     this.excHist[this.frame % HIST].set(this.exc);
     const drive = this.drive;
     for (let q = 0; q < NM; q++) drive[q] = this.excHist[(this.frame - MOTOR_DELAY[q] + HIST) % HIST][q];
     if (!this.limp) for (let q = 0; q < NM; q++) drive[q] = clamp01(drive[q] + REFLEX.gain * Math.max(0, this.mus[q].vn - REFLEX.threshold) * (1 - drive[q ^ 1]));
     this.frame++;
     this.updateGrip(); this.helpUsed = 0;
-    for (let n = 0; n < SUB; n++) {
+  }
+  /** Before each physics sub-step: this body's muscle torques and outside forces (its own parts only). */
+  substep() {
+    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc, P = this.pending, PT = this.pendingT, drive = this.drive, low = this.low, r = this.rq;
+    {
       for (let i = 0; i < NJ; i++) {
         const q = qpos[this.jq[i]];
         const t0 = this.mus[2 * i].step(drive[2 * i] * (1 - 0.6 * this.mfat[2 * i]) * low, q, H), t1 = this.mus[2 * i + 1].step(drive[2 * i + 1] * (1 - 0.6 * this.mfat[2 * i + 1]) * low, q, H);
         this.mtq[2 * i] = t0; this.mtq[2 * i + 1] = t1; qf[this.jdq[i]] = t0 + t1;
       }
-      for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = PT[3 * b]; xf[6 * b + 4] = PT[3 * b + 1]; xf[6 * b + 5] = PT[3 * b + 2]; }
+      for (const b of this.parts) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = PT[3 * b]; xf[6 * b + 4] = PT[3 * b + 1]; xf[6 * b + 5] = PT[3 * b + 2]; }
       if (this.assist > 0) {   // helping hands: hold the chest up and upright, like a parent holding a baby under the arms
         const a = this.assist, ch = this.ids.chest, xm = V.xmat, km = 9 * ch, cz = V.xpos[3 * ch + 2], vz = this.cvz || 0;
         const lift = a * Math.max(0, Math.min(62 * 9.81, 4000 * (1.38 - cz) - 300 * vz));   // carries up to the whole weight
@@ -338,19 +368,23 @@ class Body3D {
         // turn the chest back upright: torque along (its up axis × world up), proportional to how far it's tipped
         const ux = xm[km + 2], uy = xm[km + 5];   // chest's up axis in world (x, y components; z ~ 1 when upright)
         xf[6 * ch + 3] += a * 1500 * (uy); xf[6 * ch + 4] += a * 1500 * (-ux);
-        const w = qpos[3] >= 0 ? 1 : -1;   // and the hips upright too, more gently
-        xf[6 * pel + 3] += a * -600 * w * qpos[4]; xf[6 * pel + 4] += a * -600 * w * qpos[5];
+        const w = qpos[r + 3] >= 0 ? 1 : -1;   // and the hips upright too, more gently
+        xf[6 * pel + 3] += a * -600 * w * qpos[r + 4]; xf[6 * pel + 4] += a * -600 * w * qpos[r + 5];
       }
       if (this.harness) {
-        const hh = this.harness, w = qpos[3] >= 0 ? 1 : -1;
-        xf[6 * pel] += 40000 * (hh.x - qpos[0]); xf[6 * pel + 1] += 40000 * (hh.y - qpos[1]); xf[6 * pel + 2] += 40000 * (hh.z - qpos[2]);
-        xf[6 * pel + 3] += -8000 * w * qpos[4]; xf[6 * pel + 4] += -8000 * w * qpos[5]; xf[6 * pel + 5] += -8000 * w * qpos[6];
+        const hh = this.harness, w = qpos[r + 3] >= 0 ? 1 : -1;
+        xf[6 * pel] += 40000 * (hh.x - qpos[r]); xf[6 * pel + 1] += 40000 * (hh.y - qpos[r + 1]); xf[6 * pel + 2] += 40000 * (hh.z - qpos[r + 2]);
+        xf[6 * pel + 3] += -8000 * w * qpos[r + 4]; xf[6 * pel + 4] += -8000 * w * qpos[r + 5]; xf[6 * pel + 5] += -8000 * w * qpos[r + 6];
       }
       if (this.gripEq) this.applyGrip();
-      this.mj.mj_step(this.model, this.data);
     }
+  }
+  /** After a brain step's physics: part speeds, and clear the outside forces. */
+  endStep() {
+    const V = this.views(), P = this.pending, PT = this.pendingT;
     P.fill(0); PT.fill(0);
-    const p = V.xpos; for (let k = 0; k < 3 * nb; k++) this.vel[k] = (p[k] - this.prev[k]) / DT;
+    const p = V.xpos, vel = this.vel, pv = this.prev;
+    for (const b of this.parts) for (let a = 3 * b; a < 3 * b + 3; a++) vel[a] = (p[a] - pv[a]) / DT;
     this.cvz = this.vel[3 * this.ids.chest + 2];
     this.savePositions();
     this.time += DT;
@@ -375,7 +409,7 @@ class Body3D {
   pose(partId) { const V = this.views(), b = this.ids[partId]; return { pos: [V.xpos[3 * b], V.xpos[3 * b + 1], V.xpos[3 * b + 2]], quat: [V.xquat[4 * b], V.xquat[4 * b + 1], V.xquat[4 * b + 2], V.xquat[4 * b + 3]] }; }
   totalMass() { const V = this.views(); let m = 0; for (let b = 1; b < this.nbody; b++) m += V.mass[b]; return m; }
   /** The old step without senses or brain (the limp/harness viewer uses it): muscles + physics. */
-  free() { this.data.delete(); if (this.ownModel) this.model.delete(); }
+  free() { if (!this.sharedData) this.data.delete(); if (this.ownModel) this.model.delete(); }
 }
 
 /* ---------- tasks ---------- */
@@ -451,7 +485,7 @@ class Trial3D {
     this.agents = brains.map(params => {
       const body = new Body3D(mj, { model: this.model, energy: this.energy }); body.assist = this.assist;
       body.intent = taskId === 'stand' ? null : taskId;
-      const V = body.views(); V.qvel[0] += Math.cos(pushDir) * push; V.qvel[1] += Math.sin(pushDir) * push;   // a small random push at the start
+      const V = body.views(); V.qvel[body.rd] += Math.cos(pushDir) * push; V.qvel[body.rd + 1] += Math.sin(pushDir) * push;   // a small random push at the start
       return { body, st: this.task.setup(body, this), net: new Brain.Network(SIZES, params), done: false };
     });
   }
