@@ -323,7 +323,7 @@ class Body3D {
     for (let q = 0; q < NM; q++) drive[q] = this.excHist[(this.frame - MOTOR_DELAY[q] + HIST) % HIST][q];
     if (!this.limp) for (let q = 0; q < NM; q++) drive[q] = clamp01(drive[q] + REFLEX.gain * Math.max(0, this.mus[q].vn - REFLEX.threshold) * (1 - drive[q ^ 1]));
     this.frame++;
-    this.updateGrip();
+    this.updateGrip(); this.helpUsed = 0;
     for (let n = 0; n < SUB; n++) {
       for (let i = 0; i < NJ; i++) {
         const q = qpos[this.jq[i]];
@@ -333,7 +333,8 @@ class Body3D {
       for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = PT[3 * b]; xf[6 * b + 4] = PT[3 * b + 1]; xf[6 * b + 5] = PT[3 * b + 2]; }
       if (this.assist > 0) {   // helping hands: hold the chest up and upright, like a parent holding a baby under the arms
         const a = this.assist, ch = this.ids.chest, xm = V.xmat, km = 9 * ch, cz = V.xpos[3 * ch + 2], vz = this.cvz || 0;
-        xf[6 * ch + 2] += a * Math.max(0, Math.min(62 * 9.81, 4000 * (1.38 - cz) - 300 * vz));   // carries up to the whole weight
+        const lift = a * Math.max(0, Math.min(62 * 9.81, 4000 * (1.38 - cz) - 300 * vz));   // carries up to the whole weight
+        xf[6 * ch + 2] += lift; this.helpUsed += lift / SUB;   // how much of its weight the hands carried (practice charges for it)
         // turn the chest back upright: torque along (its up axis × world up), proportional to how far it's tipped
         const ux = xm[km + 2], uy = xm[km + 5];   // chest's up axis in world (x, y components; z ~ 1 when upright)
         xf[6 * ch + 3] += a * 1500 * (uy); xf[6 * ch + 4] += a * 1500 * (-ux);

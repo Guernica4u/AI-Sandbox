@@ -268,6 +268,9 @@ class Env {
       const m = this.imitation(); fell = m.off > 0.5 || m.headLow; r = fell ? 0 : m.r;   // fell, or lost the example
       this.lastMatch = m.pose; b.fallen = fell;
     } else { fell = b.checkFallen(); r = fell ? 0 : REWARDS[this.cfg.taskId](this); }
+    // leaning on the helping hands costs: the more of its weight they carry, the less it scores (so it learns to carry
+    // itself instead of hanging in them, like a toddler who'd rather be carried)
+    if (!fell && b.helpUsed) r = Math.max(0, r - 0.4 * b.helpUsed / (62 * 9.81));
     this.ret += r;
     this.observe();
     const end = this.steps >= Math.round(this.cfg.seconds / B3.DT) || (this.ref && this.refT >= this.ref.length);
