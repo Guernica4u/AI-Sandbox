@@ -536,7 +536,7 @@ function combineRanks(perEpisode) {
 }
 
 const api = { DT, SUB, BODY, BOX, HAND, MUSCLES3D, NJ, NM, SERVO, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTORS, MOTOR_DELAY, REFLEX, SIZES, OUTPUT_GROUPS, INTENTS,
-  TASKS, worldXML, Body3D, Trial3D, freshBrain, hardness, assistFor, nextStage, episodeConfigs, combineRanks };
+  TASKS, worldXML, bodyXML, Body3D, Trial3D, freshBrain, hardness, assistFor, nextStage, episodeConfigs, combineRanks };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body3D = api;
 }
