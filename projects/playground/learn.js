@@ -184,6 +184,8 @@ class Env {
       const t0 = this.ref.loop ? this.rng() * this.ref.period : this.rng() * Math.max(0.01, this.ref.period - 0.6);
       this.refT = t0; this.body.intent = CLIP_INTENT[this.cfg.clip] || null;
       this.yaw = this.steer ? (this.rng() * 2 - 1) * Math.PI : 0; this.cmd = this.yaw; this.off = [0, 0];
+      // like a toddler: repeating moves (walking) start at half the person's speed and reach full speed by stage 40
+      this.speed = this.ref.loop ? 0.5 + 0.5 * Math.min(1, st / 40) : 1;
       const q = this.refPose(t0, this.refQ), v = this.refVel(t0, this.refV);
       V.qpos.set(q); V.qvel.fill(0); V.qvel[0] = v[0]; V.qvel[1] = v[1]; V.qvel[2] = v[2];
       for (const j of this.body.joints) V.qvel[j.dq] = v[j.q];
@@ -215,7 +217,9 @@ class Env {
     return q;
   }
   refVel(t, out) {
-    const v = this.ref.vel(t, out), c = Math.cos(this.yaw), s = Math.sin(this.yaw), x = v[0], y = v[1];
+    const v = this.ref.vel(t, out), c = Math.cos(this.yaw), s = Math.sin(this.yaw), sp = this.speed || 1;
+    for (let k = 0; k < v.length; k++) v[k] *= sp;   // played slower, everything moves slower
+    const x = v[0], y = v[1];
     v[0] = c * x - s * y; v[1] = s * x + c * y;
     return v;
   }
@@ -263,7 +267,7 @@ class Env {
     this.steps++; this.time += B3.DT;
     let r, fell;
     if (this.ref) {
-      this.refT += B3.DT;
+      this.refT += B3.DT * (this.speed || 1);
       if (this.steer) this.turn();
       const m = this.imitation(); fell = m.off > 0.5 || m.headLow; r = fell ? 0 : m.r;   // fell, or lost the example
       this.lastMatch = m.pose; b.fallen = fell;
