@@ -260,6 +260,12 @@ class Body3D {
   relax() { this.exc.fill(0); this.limp = true; }
   /** A shove (impulse, N·s, world x/y/z) to a part, spread over the next brain step. */
   shove(partId, ix, iy, iz = 0) { const b = this.ids[partId], P = this.pending; P[3 * b] += ix / DT; P[3 * b + 1] += iy / DT; P[3 * b + 2] += iz / DT; }
+  /** A steady pull (N, world x/y/z) on a part for the next brain step (Test mode: dragging with the mouse). */
+  pull(partId, fx, fy, fz) { const b = this.ids[partId], P = this.pending; P[3 * b] += fx; P[3 * b + 1] += fy; P[3 * b + 2] += fz; }
+  /** A part's speed (m/s, world) over the last brain step. */
+  partVel(partId) { const b = this.ids[partId]; return [this.vel[3 * b], this.vel[3 * b + 1], this.vel[3 * b + 2]]; }
+  /** A joint's angle now. */
+  angle(jointId) { const j = this.joints.find(k => k.spec.id === jointId); return this.views().qpos[j.q]; }
   /** One brain step of physics: SUB sub-steps with the muscles' joint torques (after the motor nerve delay, plus the
       stretch reflex), shoves and the harness. */
   step() {
@@ -351,6 +357,7 @@ class Trial3D {
     this.hard = opts.hard === undefined ? 1 : opts.hard; this.noise = opts.noise === undefined ? 0.02 * this.hard : opts.noise;
     this.assist = opts.assist || 0;   // helping hands (see assistFor)
     this.keepSimulating = !!opts.keepSimulating; this.brainOff = false;
+    this.override = opts.override || null;   // Test mode: { jointId: angle } joints you're moving with a slider
     this.rng = Brain.makeRng(opts.seed || 1); this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.3 * (opts.push === undefined ? this.hard : opts.push), pushDir = this.rng() * Math.PI * 2;
     this.energy = opts.energy || this.task.energy * (1 + 4 * (1 - this.hard));
@@ -370,7 +377,8 @@ class Trial3D {
       a.body.sense(inp, this.time, this.task.senseTask(a.st, a.body));
       if (this.noise) for (let i = 0; i < inp.length; i++) inp[i] += (rng() - 0.5) * 2 * this.noise;
       const out = a.net.forward(inp);
-      if (this.brainOff) a.body.relax(); else a.body.act(out);
+      if (this.brainOff) { a.body.relax(); if (this.override && Object.keys(this.override).length) a.body.act(new Float64Array(MOTORS), this.override); }
+      else a.body.act(out, this.override);
       this.task.step(a.st, a.body, this);
       a.body.step(); a.body.muscles();
       if (a.body.checkFallen()) { a.done = true; a.fitness = this.task.score(a.st, a.body); a.success = false; }
