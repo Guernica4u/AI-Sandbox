@@ -49,7 +49,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 
 const $ = s => document.querySelector(s);
 const mj = await loadMujocoClassic();
-const { BODY, Body3D: Body, Trial3D, TASKS, SIZES, OUTPUT_GROUPS, hardness, nextStage, episodeConfigs, combineRanks, freshBrain } = window.Body3D;
+const { BODY, Body3D: Body, Trial3D, TASKS, SIZES, OUTPUT_GROUPS, hardness, assistFor, nextStage, episodeConfigs, combineRanks, freshBrain } = window.Body3D;
 const { Evolution, makeRng, toBase64, fromBase64 } = window.Brain;
 const LS_KEY = 'glassbox-playground/v1';   // the agent's brain, kept in this browser
 $('#loading').remove();
@@ -97,7 +97,7 @@ function reset(harness) {
 }
 function startAgent() {
   const owned = body && body.trialOwned; clearTrial(); if (body && !owned) body.free();
-  trial = new Trial3D(mj, brain.skill || 'stand', [Float32Array.from(brain.params)], { seed: (Math.random() * 1e9) | 0, hard: hardness(brain.stage || 0), keepSimulating: true });
+  trial = new Trial3D(mj, brain.skill || 'stand', [Float32Array.from(brain.params)], { seed: (Math.random() * 1e9) | 0, hard: hardness(brain.stage || 0), assist: assistFor(brain.stage || 0), keepSimulating: true });
   trial.maxSteps = Infinity; body = trial.agents[0].body; body.trialOwned = true; endAt = 0;
 }
 $('#harness').onclick = () => reset(!(body && body.harness));
@@ -209,7 +209,7 @@ function frame(now) {
   if (canvas.width !== Math.round(w * renderer.getPixelRatio())) { renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
   controls.update(); renderer.render(scene, camera);
   $('#status').textContent = trial
-    ? `${Train.running ? `training on ${Pool.workers.length} cores · ${Train.genSecs.toFixed(1)} s/gen · replaying the best · ` : ''}agent · generation ${brain.generation} · difficulty ${Math.round(hardness(brain.stage || 0) * 100)}% · ${trial.time.toFixed(1)} s · ${TASKS.stand.describe(trial.agents[0].st, body)}`
+    ? `${Train.running ? `training on ${Pool.workers.length} cores · ${Train.genSecs.toFixed(1)} s/gen · replaying the best · ` : ''}agent · generation ${brain.generation} · difficulty ${Math.round(hardness(brain.stage || 0) * 100)}% · helping hands ${Math.round(assistFor(brain.stage || 0) * 100)}% · ${trial.time.toFixed(1)} s · ${TASKS.stand.describe(trial.agents[0].st, body)}`
     : `${body.time.toFixed(1)} s · pelvis ${body.pose('pelvis').pos[2].toFixed(2)} m up · ${body.harness ? 'held in the harness' : 'free'} · no brain: the body is limp (Import brain… to watch an agent)`;
 }
 requestAnimationFrame(frame);

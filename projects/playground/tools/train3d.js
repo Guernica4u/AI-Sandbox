@@ -45,7 +45,7 @@ env.load().then(async ({ mj, Brain }) => {
       w.on('message', on); w.postMessage({ id, episodes, genomes: chunk.map(g => Array.from(g)) });
     }))).then(parts => { parts = parts.filter(Boolean); return { scores: episodes.map((_, e) => [].concat(...parts.map(p => p.scores[e]))), successes: episodes.map((_, e) => [].concat(...parts.map(p => p.successes[e]))) }; });
   };
-  const check = params => { let ok = 0; for (let k = 0; k < 10; k++) { const tr = new P.Trial3D(mj, skill, [params], { seed: 77777 + k * 131, hard: P.hardness(stage) }); tr.run(); ok += tr.successes()[0] ? 1 : 0; tr.free(); } return ok; };
+  const check = params => { let ok = 0; for (let k = 0; k < 10; k++) { const tr = new P.Trial3D(mj, skill, [params], { seed: 77777 + k * 131, hard: P.hardness(stage), assist: P.assistFor(stage) }); tr.run(); ok += tr.successes()[0] ? 1 : 0; tr.free(); } return ok; };
   const save = () => fs.writeFileSync(file, JSON.stringify({ bodyPlan: P.BODY.id, sizes: P.SIZES, skill, generation: evo.generation, stage, sigma: evo.sigma, history: evo.history, params: Array.from(evo.best) }));
 
   const t0 = Date.now(), end = evo.generation + +gens;
@@ -57,7 +57,7 @@ env.load().then(async ({ mj, Brain }) => {
     stage = P.nextStage(stage, r.successes.reduce((s, ep) => s + (ep[best] ? 1 : 0), 0) / r.successes.length);
     evo.tell(combined);
     if (evo.generation % 10 === 0 || evo.generation === end) {
-      console.log(`gen ${evo.generation} · ${skill} stage ${stage.toFixed(1)} (${Math.round(P.hardness(stage) * 100)}%) · check ${check(evo.best)}/10 · ${((Date.now() - t1) / 1000).toFixed(1)} s/gen · ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+      console.log(`gen ${evo.generation} · ${skill} stage ${stage.toFixed(1)} (${Math.round(P.hardness(stage) * 100)}%, help ${Math.round(P.assistFor(stage) * 100)}%) · check ${check(evo.best)}/10 · ${((Date.now() - t1) / 1000).toFixed(1)} s/gen · ${((Date.now() - t0) / 60000).toFixed(1)} min`);
       save();
     }
   }

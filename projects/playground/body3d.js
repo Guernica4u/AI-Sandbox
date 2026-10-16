@@ -277,6 +277,15 @@ class Body3D {
         this.mtq[2 * i] = t0; this.mtq[2 * i + 1] = t1; qf[this.jdq[i]] = t0 + t1;
       }
       for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = 0; xf[6 * b + 4] = 0; xf[6 * b + 5] = 0; }
+      if (this.assist > 0) {   // helping hands: hold the chest up and upright, like a parent holding a baby under the arms
+        const a = this.assist, ch = this.ids.chest, xm = V.xmat, km = 9 * ch, cz = V.xpos[3 * ch + 2], vz = this.cvz || 0;
+        xf[6 * ch + 2] += a * Math.max(0, Math.min(62 * 9.81, 4000 * (1.38 - cz) - 300 * vz));   // carries up to the whole weight
+        // turn the chest back upright: torque along (its up axis × world up), proportional to how far it's tipped
+        const ux = xm[km + 2], uy = xm[km + 5];   // chest's up axis in world (x, y components; z ~ 1 when upright)
+        xf[6 * ch + 3] += a * 1500 * (uy); xf[6 * ch + 4] += a * 1500 * (-ux);
+        const w = qpos[3] >= 0 ? 1 : -1;   // and the hips upright too, more gently
+        xf[6 * pel + 3] += a * -600 * w * qpos[4]; xf[6 * pel + 4] += a * -600 * w * qpos[5];
+      }
       if (this.harness) {
         const hh = this.harness, w = qpos[3] >= 0 ? 1 : -1;
         xf[6 * pel] += 40000 * (hh.x - qpos[0]); xf[6 * pel + 1] += 40000 * (hh.y - qpos[1]); xf[6 * pel + 2] += 40000 * (hh.z - qpos[2]);
@@ -286,6 +295,7 @@ class Body3D {
     }
     P.fill(0);
     const p = V.xpos; for (let k = 0; k < 3 * nb; k++) this.vel[k] = (p[k] - this.prev[k]) / DT;
+    this.cvz = this.vel[3 * this.ids.chest + 2];
     this.savePositions();
     this.time += DT;
   }
@@ -339,13 +349,14 @@ class Trial3D {
     this.mj = mj; this.taskId = taskId; this.task = TASKS[taskId];
     this.time = 0; this.steps = 0; this.maxSteps = Math.round(this.task.seconds / DT);
     this.hard = opts.hard === undefined ? 1 : opts.hard; this.noise = opts.noise === undefined ? 0.02 * this.hard : opts.noise;
+    this.assist = opts.assist || 0;   // helping hands (see assistFor)
     this.keepSimulating = !!opts.keepSimulating; this.brainOff = false;
     this.rng = Brain.makeRng(opts.seed || 1); this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.3 * (opts.push === undefined ? this.hard : opts.push), pushDir = this.rng() * Math.PI * 2;
     this.energy = opts.energy || this.task.energy * (1 + 4 * (1 - this.hard));
     this.model = mj.MjModel.from_xml_string(worldXML());
     this.agents = brains.map(params => {
-      const body = new Body3D(mj, { model: this.model, energy: this.energy });
+      const body = new Body3D(mj, { model: this.model, energy: this.energy }); body.assist = this.assist;
       body.intent = taskId === 'stand' ? null : taskId;
       const V = body.views(); V.qvel[0] += Math.cos(pushDir) * push; V.qvel[1] += Math.sin(pushDir) * push;   // a small random push at the start
       return { body, st: this.task.setup(body, this), net: new Brain.Network(SIZES, params), done: false };
@@ -378,11 +389,16 @@ function freshBrain(rng) {
   for (let o = 0; o < NM; o++) { const row = start + o * (hid + 1); for (let q = 0; q < hid; q++) net.params[row + q] *= 0.3; net.params[row + hid] = Math.atanh(0.1); }
   return net.params;
 }
+/* Difficulty by stage (it rises only while the agent copes). Learning to stand in 3D from nothing stalls (the first
+   agent learned to fall in 2.9 s and stayed there), so at first "helping hands" hold the chest up and upright, like an
+   adult holding a baby under the arms; the help fades out by stage 80. Because the stage only rises while the agent copes, the help
+   settles at what it needs and fades as it learns. Shoves, noise and energy scarcity grow from stage 0 to 150.       */
 const hardness = stage => Math.min(1, stage / 150);
+const assistFor = stage => Math.max(0, 1 - stage / 80);
 function nextStage(stage, rate) { return rate >= 2 / 3 ? stage + 1 : rate <= 0 ? Math.max(0, stage - 0.5) : stage; }
 function episodeConfigs(taskId, stage, generation) {
   const hard = hardness(stage), out = [];
-  for (let e = 0; e < 2; e++) out.push({ seed: Math.round(generation) * 7919 + e * 104729 + 1, hard, push: hard, noise: 0.02 * hard });
+  for (let e = 0; e < 2; e++) out.push({ seed: Math.round(generation) * 7919 + e * 104729 + 1, hard, push: hard, noise: 0.02 * hard, assist: assistFor(stage) });
   return out;
 }
 /** Scores per attempt -> one per brain: mean rank, minus a little for inconsistency (as in 2D). */
@@ -392,7 +408,7 @@ function combineRanks(perEpisode) {
 }
 
 const api = { DT, SUB, BODY, MUSCLES3D, NJ, NM, SERVO, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTORS, MOTOR_DELAY, REFLEX, SIZES, OUTPUT_GROUPS, INTENTS,
-  TASKS, worldXML, Body3D, Trial3D, freshBrain, hardness, nextStage, episodeConfigs, combineRanks };
+  TASKS, worldXML, Body3D, Trial3D, freshBrain, hardness, assistFor, nextStage, episodeConfigs, combineRanks };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body3D = api;
 }
