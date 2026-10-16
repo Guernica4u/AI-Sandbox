@@ -301,7 +301,7 @@ class Practice {
   /** msg: { policy, logstd, value, valueSizes, stage } → stats */
   rollout(msg) {
     const S = B3.SENSES, A = B3.MOTORS, E = this.E, T = this.T, rng = this.rng;
-    const pol = new MLP(B3.SIZES, msg.policy, 'tanh'), val = new MLP(msg.valueSizes, msg.value, 'linear'), ls = msg.logstd;
+    const pol = new MLP(msg.policySizes || B3.SIZES, msg.policy, 'tanh'), val = new MLP(msg.valueSizes, msg.value, 'linear'), ls = msg.logstd;
     const sd = Float32Array.from(ls, Math.exp), a = new Float32Array(A);
     const rew = new Float32Array(E * T), done = new Uint8Array(E * T), vnext = new Float32Array(E);
     const episodes = [];
@@ -343,7 +343,7 @@ class Practice {
       for (let i = N - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)), t = this.perm[i]; this.perm[i] = this.perm[j]; this.perm[j] = t; }
       this.permSeed = msg.epochSeed;
     }
-    const pol = new MLP(B3.SIZES, msg.policy, 'tanh'), val = new MLP(msg.valueSizes, msg.value, 'linear'), ls = msg.logstd;
+    const pol = new MLP(msg.policySizes || B3.SIZES, msg.policy, 'tanh'), val = new MLP(msg.valueSizes, msg.value, 'linear'), ls = msg.logstd;
     const gp = new Float32Array(pol.n), gls = new Float32Array(A), gv = new Float32Array(val.n), dmu = new Float32Array(A), dv = new Float32Array(1);
     const iv = Float32Array.from(ls, x => Math.exp(-2 * x));
     const lo = Math.floor(msg.k * N / msg.K), hi = Math.floor((msg.k + 1) * N / msg.K);
@@ -371,11 +371,19 @@ class Practice {
 const VALUE_SIZES = [B3.SENSES, 128, 128, 1];
 function newLearner(opts = {}) {
   const rng = Brain.makeRng(opts.seed || 1);
-  const policy = opts.policy ? Float32Array.from(opts.policy) : B3.freshBrain(rng);
+  // the brain's shape: the body's standard one, or bigger (more layers / neurons) - same senses in, same muscles out
+  const sizes = opts.sizes || B3.SIZES;
+  const policy = opts.policy ? Float32Array.from(opts.policy) : sizes.join() === B3.SIZES.join() ? B3.freshBrain(rng) : freshBigBrain(sizes, rng);
   const value = opts.value ? Float32Array.from(opts.value) : MLP.random(VALUE_SIZES, rng, 'linear', 0.1).params;
   const logstd = opts.logstd ? Float32Array.from(opts.logstd) : new Float32Array(B3.MOTORS).fill(Math.log(opts.wobble || 0.2));
-  return { policy, value, logstd, stage: opts.stage || 0, stages: Object.assign({}, opts.stages), iteration: opts.iteration || 0, samples: opts.samples || 0,
+  return { sizes, policy, value, logstd, stage: opts.stage || 0, stages: Object.assign({}, opts.stages), iteration: opts.iteration || 0, samples: opts.samples || 0,
     optP: new Adam(policy.length + logstd.length, opts.lr || 3e-4), optV: new Adam(value.length, opts.lrV || 1e-3), history: opts.history || [] };
+}
+/** A new brain of any shape: random, but every muscle starts with a light resting tone (like freshBrain). */
+function freshBigBrain(sizes, rng) {
+  const net = MLP.random(sizes, rng, 'tanh', 0.3), L = sizes.length, fan = sizes[L - 2];
+  for (let o = 0; o < sizes[L - 1]; o++) net.params[net.offs[L - 1] + o * (fan + 1) + fan] = Math.atanh(0.1);
+  return net.params;
 }
 /** Sum the workers' gradient shares, keep the step sensible (norm clipping), update. */
 function applyGrads(L, parts, maxNorm = 0.5) {
@@ -392,7 +400,7 @@ function applyGrads(L, parts, maxNorm = 0.5) {
 }
 /** A brain file (the same kind the pages use) plus what's needed to keep practising. */
 function learnerToJSON(L, extra = {}) {
-  return Object.assign({ method: 'ppo', bodyPlan: B3.BODY.id, sizes: B3.SIZES, skill: 'stand', generation: L.iteration, stage: L.stage, stages: L.stages, samples: L.samples,
+  return Object.assign({ method: 'ppo', bodyPlan: B3.BODY.id, sizes: L.sizes, skill: 'stand', generation: L.iteration, stage: L.stage, stages: L.stages, samples: L.samples,
     params: Array.from(L.policy), logstd: Array.from(L.logstd), valueSizes: VALUE_SIZES, value: Array.from(L.value), history: L.history }, extra);
 }
 

@@ -48,7 +48,9 @@ env.load().then(async () => {
   const stages = Object.assign({}, saved && saved.stages);
   if (saved && !saved.stages && saved.skill) stages[['walk', 'walk2', 'run', 'jump'].includes(saved.skill) ? 'copy:' + saved.skill : saved.skill] = saved.stage || 0;
   for (const sk of skills) if (stages[sk.key] === undefined) stages[sk.key] = saved ? 0 : +(process.env.GB_STAGE || 0);
-  const L = Learn.newLearner({ seed: +seed, policy: saved && saved.params, value: fromPPO ? saved.value : null, logstd: fromPPO ? saved.logstd : null,
+  // GB_HIDDEN=128,128 gives a fresh brain that shape (a saved brain keeps its own)
+  const sizes = saved ? saved.sizes : process.env.GB_HIDDEN ? [P.SENSES, ...process.env.GB_HIDDEN.split(',').map(Number), P.MOTORS] : P.SIZES;
+  const L = Learn.newLearner({ sizes, seed: +seed, policy: saved && saved.params, value: fromPPO ? saved.value : null, logstd: fromPPO ? saved.logstd : null,
     stages, iteration: fromPPO ? saved.generation : 0, samples: fromPPO ? saved.samples : 0, history: fromPPO ? saved.history : [] });
   const assist = process.env.GB_ASSIST !== undefined ? +process.env.GB_ASSIST : undefined;
 
@@ -66,10 +68,10 @@ env.load().then(async () => {
   const help = st => Math.round((assist !== undefined ? assist : P.assistFor(st)) * 100);
 
   const t0 = Date.now(), end = L.iteration + +iters;
-  console.log(`${path.basename(file)}: Playground · learning ${keys.join(' + ')} from experience · iteration ${L.iteration} → ${end} · ${n} cores, ${n * E} bodies${assist !== undefined ? ` · help fixed ${assist}` : ''}`);
+  console.log(`${path.basename(file)}: Playground · learning ${keys.join(' + ')} from experience · brain ${L.sizes.join('-')} · iteration ${L.iteration} → ${end} · ${n} cores, ${n * E} bodies${assist !== undefined ? ` · help fixed ${assist}` : ''}`);
   while (L.iteration < end) {
     const t1 = Date.now();
-    const ro = await Promise.all(workers.map(w => ask(w, { cmd: 'rollout', policy: L.policy, logstd: L.logstd, value: L.value, valueSizes: Learn.VALUE_SIZES, stages: L.stages })));
+    const ro = await Promise.all(workers.map(w => ask(w, { cmd: 'rollout', policySizes: L.sizes, policy: L.policy, logstd: L.logstd, value: L.value, valueSizes: Learn.VALUE_SIZES, stages: L.stages })));
     const N = ro.reduce((s, r) => s + r.n, 0), advMean = ro.reduce((s, r) => s + r.advSum, 0) / N;
     const advStd = Math.sqrt(Math.max(1e-8, ro.reduce((s, r) => s + r.advSum2, 0) / N - advMean * advMean));
     const eps = [].concat(...ro.map(r => r.episodes));
@@ -77,7 +79,7 @@ env.load().then(async () => {
     for (let ep = 0; ep < EPOCHS; ep++) {
       const epochSeed = L.iteration * 100 + ep + 1;
       for (let k = 0; k < K; k++) {
-        const parts = await Promise.all(workers.map(w => ask(w, { cmd: 'grad', policy: L.policy, logstd: L.logstd, value: L.value, valueSizes: Learn.VALUE_SIZES, advMean, advStd, epochSeed, k, K, entropy: 0 })));
+        const parts = await Promise.all(workers.map(w => ask(w, { cmd: 'grad', policySizes: L.sizes, policy: L.policy, logstd: L.logstd, value: L.value, valueSizes: Learn.VALUE_SIZES, advMean, advStd, epochSeed, k, K, entropy: 0 })));
         info = Learn.applyGrads(L, parts);
       }
       if (info.kl > 0.03) break;   // the brain moved far enough this round
