@@ -162,6 +162,8 @@ class Env {
     if (this.cfg.clip) {
       const c = clips()[this.cfg.clip]; if (!c) throw new Error('no example clip ' + this.cfg.clip);
       this.ref = new Reference(c, c.loop !== undefined ? c.loop : this.cfg.clip !== 'jump');
+      this.steer = this.ref.loop && this.cfg.steer !== false;   // repeating moves (walk, run) go wherever it's told
+      this.rawQ = new Float64Array(c.qpos[0].length);
       this.refData = new mj.MjData(this.model); this.refQ = new Float64Array(c.qpos[0].length); this.refV = new Float64Array(c.qpos[0].length);
     }
     this.reset();
@@ -181,7 +183,8 @@ class Env {
     if (this.ref) {   // start somewhere in the example, already in its pose and moving with it (as in DeepMimic)
       const t0 = this.ref.loop ? this.rng() * this.ref.period : this.rng() * Math.max(0.01, this.ref.period - 0.6);
       this.refT = t0; this.body.intent = CLIP_INTENT[this.cfg.clip] || null;
-      const q = this.ref.pose(t0), v = this.ref.vel(t0, this.refV);
+      this.yaw = this.steer ? (this.rng() * 2 - 1) * Math.PI : 0; this.cmd = this.yaw; this.off = [0, 0];
+      const q = this.refPose(t0, this.refQ), v = this.refVel(t0, this.refV);
       V.qpos.set(q); V.qvel.fill(0); V.qvel[0] = v[0]; V.qvel[1] = v[1]; V.qvel[2] = v[2];
       for (const j of this.body.joints) V.qvel[j.dq] = v[j.q];
       this.mj.mj_forward(this.model, this.body.data); this.body.savePositions();
@@ -196,14 +199,47 @@ class Env {
   }
   observe() {
     // copying an example, the rhythm sense follows the example (where in the stride it is) instead of the clock
-    this.body.sense(this.obs, this.ref ? this.ref.phase(this.refT) : this.time, this.ref ? null : this.task.senseTask(this.st, this.body));
+    this.body.sense(this.obs, this.ref ? this.ref.phase(this.refT) : this.time, this.ref ? this.steerSense() : this.task.senseTask(this.st, this.body));
     if (this.noise) for (let i = 0; i < this.obs.length; i++) this.obs[i] += (this.rng() - 0.5) * 2 * this.noise;
     return this.obs;
+  }
+  /* Steering: the example is turned to face a direction (yaw) and moved (off); when the order changes, it curves
+     toward the new direction at a person's turning rate, keeping its path continuous. */
+  refPose(t, out) {
+    const q = this.ref.pose(t, out);
+    if (!this.yaw && !this.off[0] && !this.off[1]) return q;
+    const c = Math.cos(this.yaw), s = Math.sin(this.yaw), x = q[0], y = q[1];
+    q[0] = c * x - s * y + this.off[0]; q[1] = s * x + c * y + this.off[1];
+    const hw = Math.cos(this.yaw / 2), hz = Math.sin(this.yaw / 2), w = q[3], qx = q[4], qy = q[5], qz = q[6];   // turn about z, then the pose's own turn
+    q[3] = hw * w - hz * qz; q[4] = hw * qx - hz * qy; q[5] = hw * qy + hz * qx; q[6] = hw * qz + hz * w;
+    return q;
+  }
+  refVel(t, out) {
+    const v = this.ref.vel(t, out), c = Math.cos(this.yaw), s = Math.sin(this.yaw), x = v[0], y = v[1];
+    v[0] = c * x - s * y; v[1] = s * x + c * y;
+    return v;
+  }
+  /** Now and then a new direction; the example turns toward it (about 45° a second) without jumping. */
+  turn() {
+    if (this.rng() < B3.DT / 3) this.cmd = this.yaw + (this.rng() * 2 - 1) * Math.PI / 2;   // a new order every ~3 s
+    let d = this.cmd - this.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+    const step = Math.max(-0.8 * B3.DT, Math.min(0.8 * B3.DT, d));
+    if (!step) return;
+    const raw = this.ref.pose(this.refT, this.rawQ), x = raw[0], y = raw[1];
+    const c0 = Math.cos(this.yaw), s0 = Math.sin(this.yaw), c1 = Math.cos(this.yaw + step), s1 = Math.sin(this.yaw + step);
+    this.off[0] += (c0 * x - s0 * y) - (c1 * x - s1 * y); this.off[1] += (s0 * x + c0 * y) - (s1 * x + c1 * y);
+    this.yaw += step;
+  }
+  /** What it's told: which way to go, as forward and sideways in the direction its body faces (0 when not steering). */
+  steerSense() {
+    if (!this.steer) return null;
+    const [c, s] = this.body.heading(), dx = Math.cos(this.cmd), dy = Math.sin(this.cmd);
+    return { fwd: dx * c + dy * s, side: -dx * s + dy * c, up: 0, a: 1 };
   }
   /** How closely the body matches the example right now: pose, joint speeds, hands and feet, where the hips are
       (weights as in DeepMimic), plus a little for not wasting energy. Also: how far the hips are from the example's. */
   imitation() {
-    const b = this.body, V = b.views(), mj = this.mj, q = this.ref.pose(this.refT, this.refQ), v = this.ref.vel(this.refT, this.refV);
+    const b = this.body, V = b.views(), mj = this.mj, q = this.refPose(this.refT, this.refQ), v = this.refVel(this.refT, this.refV);
     let dp = 0, dv = 0;
     for (const j of b.joints) { dp += (V.qpos[j.q] - q[j.q]) ** 2; dv += (V.qvel[j.dq] - v[j.q]) ** 2; }
     let dot = 0; for (let k = 3; k < 7; k++) dot += V.qpos[k] * q[k];
@@ -228,6 +264,7 @@ class Env {
     let r, fell;
     if (this.ref) {
       this.refT += B3.DT;
+      if (this.steer) this.turn();
       const m = this.imitation(); fell = m.off > 0.5 || m.headLow; r = fell ? 0 : m.r;   // fell, or lost the example
       this.lastMatch = m.pose; b.fallen = fell;
     } else { fell = b.checkFallen(); r = fell ? 0 : REWARDS[this.cfg.taskId](this); }

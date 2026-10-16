@@ -60,7 +60,7 @@ env.load().then(async () => {
   })));
   let nextId = 1;
   const ask = (w, msg) => new Promise(res => { const id = nextId++, on = m => { if (m.id === id) { w.off('message', on); res(m); } }; w.on('message', on); w.postMessage(Object.assign({ id }, msg)); });
-  const keys = skills.map(s => s.key);
+  const keys = [...new Set(skills.map(s => s.key))];   // a skill listed twice gets twice the bodies
   const save = () => fs.writeFileSync(file, JSON.stringify(Learn.learnerToJSON(L, { skill: keys.join(','), skills: keys, stage: L.stages[keys[0]] || 0 })));
   const EPOCHS = 5, K = 8;   // 5 passes over the data, 8 minibatches each
   const help = st => Math.round((assist !== undefined ? assist : P.assistFor(st)) * 100);

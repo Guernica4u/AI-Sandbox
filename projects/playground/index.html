@@ -167,7 +167,7 @@ function poseGhost(dt) {
   const tr = View.trial, copying = tr instanceof CopyTrial && App.mode !== 'test', ideal = App.mode === 'test' && Test.ideal;
   setGhostVisible((copying && $('#showPerson').checked) || !!ideal);
   if (copying || ideal) {   // exactly where the body should be right now
-    const V = Ghost.body.views(); V.qpos.set(ideal ? ideal.ref.pose(ideal.t) : tr.env.ref.pose(tr.env.refT));
+    const V = Ghost.body.views(); V.qpos.set(ideal ? ideal.ref.pose(ideal.t) : tr.env.refPose(tr.env.refT, new Float64Array(V.qpos.length)));
     if (ideal && Test.harness) { const h = body().harness; V.qpos[0] = h.x; V.qpos[1] = h.y; }   // in the harness it stays put
     mj.mj_kinematics(Ghost.body.model, Ghost.body.data);
     for (const p of BODY.parts) { const { pos, quat } = Ghost.body.pose(p.id), g = ghostGroups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
