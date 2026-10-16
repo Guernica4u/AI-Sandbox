@@ -62,7 +62,7 @@
 </header>
 <div class="bar">
   <div class="tabs" id="modeTabs"><button data-mode="watch">Watch</button><button data-mode="train">Train</button><button data-mode="test">Test</button></div>
-  <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label></div>
+  <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label><span class="label">Human example</span><select id="example"><option value="">none</option></select></div>
   <div class="controls" id="trainCtl" hidden><button class="go" id="trainBtn">Start training</button><span class="label" id="trainInfo"></span></div>
   <div class="controls" id="testCtl" hidden><button id="brainBtn">Brain: on</button><button id="harnessBtn">Harness: on</button><button id="resetBtn">Reset body</button><button id="shove2">Shove</button><label class="check"><input type="checkbox" id="slow2"> Slow motion</label></div>
 </div>
@@ -85,6 +85,7 @@
 <script src="../embodied-2d/brain.js"></script>
 <script src="../embodied-2d/muscle.js"></script>
 <script src="body3d.js"></script>
+<script src="mocap/clips.js"></script>
 <script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }</script>
 <script type="module">
 import * as THREE from 'three';
@@ -136,7 +137,8 @@ const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshSta
 ground.receiveShadow = true; world.add(ground);
 const grid = new THREE.GridHelper(60, 60, 0x2c323b, 0x22272e); grid.rotation.x = Math.PI / 2; grid.position.z = 0.001; world.add(grid);
 const skin = new THREE.MeshStandardMaterial({ color: 0xd9d4ca, roughness: 0.6 }), sole = new THREE.MeshStandardMaterial({ color: 0xa9a49a, roughness: 0.7 });
-const groups = {}, pickables = [];
+function buildFigure(skin, sole, pickables) {
+const groups = {};
 for (const p of BODY.parts) {
   const g = new THREE.Group(); groups[p.id] = g; world.add(g);
   for (const s of p.geoms) {
@@ -148,8 +150,27 @@ for (const p of BODY.parts) {
       mesh = new THREE.Mesh(new THREE.CapsuleGeometry(s.r, a.distanceTo(b), 8, 16), skin);
       mesh.position.copy(a).add(b).multiplyScalar(0.5); mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
     }
-    mesh.castShadow = true; mesh.userData.part = p.id; g.add(mesh); pickables.push(mesh);
+    mesh.castShadow = true; mesh.userData.part = p.id; g.add(mesh); if (pickables) pickables.push(mesh);
   }
+}
+return groups;
+}
+const pickables = [], groups = buildFigure(skin, sole, pickables);
+/* the human example: a see-through figure replaying a recording of a real person, fitted onto our body (mocap.js) */
+const ghostMat = new THREE.MeshStandardMaterial({ color: 0x4fd1c5, roughness: 0.6, transparent: true, opacity: 0.35, depthWrite: false });
+const ghostGroups = buildFigure(ghostMat, ghostMat, null), CLIPS = window.MOCAP_CLIPS || {};
+const Ghost = { clip: null, t: 0, body: new window.Body3D.Body3D(mj) };
+const setGhostVisible = v => { for (const g of Object.values(ghostGroups)) g.visible = v; };
+setGhostVisible(false);
+function poseGhost(dt) {
+  const c = Ghost.clip; if (!c) return;
+  Ghost.t = (Ghost.t + dt) % (c.qpos.length / c.fps);
+  const f = Ghost.t * c.fps, i = Math.floor(f), w = f - i, a = c.qpos[i], b = c.qpos[Math.min(i + 1, c.qpos.length - 1)], V = Ghost.body.views();
+  for (let k = 0; k < a.length; k++) V.qpos[k] = a[k] + (b[k] - a[k]) * w;
+  V.qpos[0] -= c.qpos[0][0]; V.qpos[1] -= c.qpos[0][1] + 0.9;   // start beside the agent, on its right
+  let n = 0; for (let k = 3; k < 7; k++) n += V.qpos[k] * V.qpos[k]; n = Math.sqrt(n); for (let k = 3; k < 7; k++) V.qpos[k] /= n;
+  mj.mj_kinematics(Ghost.body.model, Ghost.body.data);
+  for (const p of BODY.parts) { const { pos, quat } = Ghost.body.pose(p.id), g = ghostGroups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
 }
 const dragLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0xff6a3d }));
 dragLine.visible = false; scene.add(dragLine);
@@ -339,6 +360,8 @@ $('#importFile').onchange = async e => {
   } catch (err) { toast('Could not import: ' + err.message, 4000); }
 };
 $('#restart').onclick = () => newTrial();
+$('#example').innerHTML += Object.entries(CLIPS).map(([id, c]) => `<option value="${id}">${c.label}</option>`).join('');
+$('#example').onchange = e => { Ghost.clip = CLIPS[e.target.value] || null; Ghost.t = 0; setGhostVisible(!!Ghost.clip); if (Ghost.clip) toast(`A real person (${Ghost.clip.source.replace(/^CMU /, 'CMU motion library, ')}), fitted onto our body`); };
 $('#check').onclick = successCheck;
 const shove = () => { const a = Math.random() * Math.PI * 2; body() && body().shove('chest', Math.cos(a) * 40, Math.sin(a) * 40); };
 $('#shove').onclick = shove; $('#shove2').onclick = shove;
@@ -365,6 +388,7 @@ function frame(now) {
   const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
   acc += View.slow ? dt * 0.2 : dt; let n = 0;
   while (View.trial && acc >= 1 / 60 && n++ < 4) { stepOnce(now); acc -= 1 / 60; }
+  poseGhost(View.slow ? dt * 0.2 : dt);
   const b = body();
   if (b) for (const p of BODY.parts) { const { pos, quat } = b.pose(p.id), g = groups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
   if (b) { const c = b.pose('chest').pos; controls.target.lerp(new THREE.Vector3(c[0], 0.9, -c[1]), 0.05); sun.position.set(c[0] + 3, 6, -c[1] + 4); sun.target.position.set(c[0], 0, -c[1]); }
@@ -385,7 +409,7 @@ function frame(now) {
 
 load(); refreshAgents(); select('watch');
 requestAnimationFrame(frame);
-window.__pg = { App, View, Test, stepOnce, successCheck };   // for checking the page from the console
+window.__pg = { App, View, Test, stepOnce, successCheck, Ghost, poseGhost, render: () => renderer.render(scene, camera), camera, controls };   // for checking the page from the console
 </script>
 </body>
 </html>

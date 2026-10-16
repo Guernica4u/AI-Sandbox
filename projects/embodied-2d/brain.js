@@ -159,6 +159,61 @@ class Evolution {
   }
 }
 
+/* ---------- evolution strategy: nudge one brain both ways, step toward the nudges that did better ----------
+   Same interface as Evolution (population, tell, best, generation, history). population[0] is the brain itself;
+   the rest are mirrored pairs (brain + nudge, brain − nudge). Every member's score counts, not just the top few,
+   so it fine-tunes a big brain far better per try. Steps use Adam (a step size per weight). */
+class Strategy {
+  constructor(opts) {
+    this.kind = 'es';
+    this.sizes = opts.sizes.slice();
+    this.pairs = Math.max(1, Math.floor(((opts.popSize || 48) - 1) / 2));
+    this.popSize = 1 + 2 * this.pairs;
+    this.noise = opts.noise || 0.03; this.lr = opts.lr || 0.01; this.decay = opts.decay === undefined ? 0.002 : opts.decay;
+    this.sigma = opts.sigma || 0.15;   // kept only so the file still suits the other method
+    this.seed = opts.seed >>> 0 || 1; this.rng = makeRng(this.seed);
+    this.generation = opts.generation || 0;
+    this.history = opts.history ? opts.history.slice() : [];
+    this.best = opts.parent ? Float32Array.from(opts.parent) : Network.random(this.sizes, this.rng).params;
+    const n = this.best.length; this.m = new Float32Array(n); this.v = new Float32Array(n); this.t = 0;
+    this.bestFitness = -Infinity;
+    this._spawn();
+  }
+  _spawn() {
+    const n = this.best.length, r = this.rng;
+    this.eps = Array.from({ length: this.pairs }, () => { const e = new Float32Array(n); for (let i = 0; i < n; i++) e[i] = r.gauss(); return e; });
+    this.population = [Float32Array.from(this.best)];
+    for (const e of this.eps) {
+      const a = new Float32Array(n), b = new Float32Array(n);
+      for (let i = 0; i < n; i++) { a[i] = this.best[i] + this.noise * e[i]; b[i] = this.best[i] - this.noise * e[i]; }
+      this.population.push(a, b);
+    }
+  }
+  /** Which member's success says whether the brain copes (the brain itself, not a nudge). */
+  judge() { return 0; }
+  tell(fitness) {
+    const K = this.pairs, n = this.best.length, idx = [];
+    for (let i = 1; i < fitness.length; i++) idx.push(i);
+    idx.sort((a, b) => fitness[a] - fitness[b]);
+    const rank = new Float32Array(fitness.length); idx.forEach((i, k) => { rank[i] = k / (idx.length - 1) - 0.5; });   // centred ranks
+    const g = new Float32Array(n);
+    for (let k = 0; k < K; k++) { const w = (rank[1 + 2 * k] - rank[2 + 2 * k]) / (2 * K * this.noise), e = this.eps[k]; if (w) for (let i = 0; i < n; i++) g[i] += w * e[i]; }
+    this.t++;
+    const b1 = 0.9, b2 = 0.999, c1 = 1 - Math.pow(b1, this.t), c2 = 1 - Math.pow(b2, this.t);
+    for (let i = 0; i < n; i++) {
+      const gi = g[i] - this.decay * this.best[i];
+      this.m[i] = b1 * this.m[i] + (1 - b1) * gi; this.v[i] = b2 * this.v[i] + (1 - b2) * gi * gi;
+      this.best[i] += this.lr * (this.m[i] / c1) / (Math.sqrt(this.v[i] / c2) + 1e-8);
+    }
+    const top = Math.max(...fitness), mean = fitness.reduce((s, f) => s + f, 0) / fitness.length;
+    this.bestFitness = fitness[0]; this.generation++;
+    this.history.push([this.generation, +top.toFixed(3), +mean.toFixed(3)]);
+    if (this.history.length > 400) this.history = compressHistory(this.history);
+    this._spawn();
+    return { generation: this.generation, best: top, mean };
+  }
+}
+
 function compressHistory(h) {   // keep the first and last points, thin out the middle
   const out = [h[0]];
   for (let i = 1; i < h.length - 100; i += 2) out.push(h[i]);
@@ -200,7 +255,7 @@ function brainFromJSON(j) {
   } };
 }
 
-const api = { makeRng, Network, Evolution, brainToJSON, brainFromJSON, toBase64, fromBase64 };
+const api = { makeRng, Network, Evolution, Strategy, brainToJSON, brainFromJSON, toBase64, fromBase64 };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Brain = api;
 }
