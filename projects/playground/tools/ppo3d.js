@@ -34,11 +34,14 @@ env.load().then(async ({ mj, Brain }) => {
   const fromPPO = saved && saved.method === 'ppo';
   const L = Learn.newLearner({ seed: +seed, policy: saved && saved.params, value: fromPPO ? saved.value : null, logstd: fromPPO ? saved.logstd : null,
     stage: saved ? saved.stage : +(process.env.GB_STAGE || 0), iteration: fromPPO ? saved.generation : 0, samples: fromPPO ? saved.samples : 0, history: fromPPO ? saved.history : [] });
-  const assist = process.env.GB_ASSIST !== undefined ? +process.env.GB_ASSIST : undefined;
+  let assist = process.env.GB_ASSIST !== undefined ? +process.env.GB_ASSIST : undefined;
+  // a skill named after a human example (walk, walk2, run, jump) means: copy that example (mocap/clips.js)
+  const clip = ['walk', 'walk2', 'run', 'jump'].includes(skill) ? skill : undefined;
+  if (clip && assist === undefined) assist = 0;
 
   const n = Math.max(1, Math.min(+coresArg || os.cpus().length - 1, 48));
   const workers = await Promise.all(Array.from({ length: n }, (_, k) => new Promise(res => {
-    const w = new Worker(__filename, { workerData: { taskId: skill, stage: L.stage, seed: +seed * 100 + k + 1, envs: 2, steps: 512, assist } });
+    const w = new Worker(__filename, { workerData: { taskId: clip ? 'stand' : skill, clip, seconds: clip ? 10 : undefined, stage: L.stage, seed: +seed * 100 + k + 1, envs: 2, steps: 512, assist } });
     w.once('message', () => res(w));
   })));
   let nextId = 1;
@@ -47,7 +50,7 @@ env.load().then(async ({ mj, Brain }) => {
   const EPOCHS = 5, K = 8;   // 5 passes over the data, 8 minibatches each
 
   const t0 = Date.now(), end = L.iteration + +iters;
-  console.log(`${path.basename(file)}: Playground · learning ${skill} from experience · iteration ${L.iteration} → ${end} · ${n} cores · stage ${L.stage}${assist !== undefined ? ` · help fixed ${assist}` : ''}`);
+  console.log(`${path.basename(file)}: Playground · learning ${clip ? `to ${skill} by copying a real person` : skill} from experience · iteration ${L.iteration} → ${end} · ${n} cores · stage ${L.stage}${assist !== undefined ? ` · help fixed ${assist}` : ''}`);
   while (L.iteration < end) {
     const t1 = Date.now(), base = { policy: L.policy, logstd: L.logstd, value: L.value, valueSizes: Learn.VALUE_SIZES, stage: L.stage };
     const ro = await Promise.all(workers.map(w => ask(w, Object.assign({ cmd: 'rollout' }, base))));
