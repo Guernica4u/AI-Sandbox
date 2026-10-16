@@ -7,9 +7,9 @@
 'use strict';
 const fs = require('fs'), path = require('path');
 const D = path.join(__dirname, '..');
-// id, label, CMU trial, loops (repeats a stride), what it's for. All from mocap.cs.cmu.edu (free to use and share).
+// id, label, CMU trial, loops (repeats a stride), what it's for, { from, to } seconds to keep. All from mocap.cs.cmu.edu (free to use and share).
 const CLIPS = [
-  ['stand', 'Stand still', '82_08', false, 'everyday'],
+  ['stand', 'Stand still', '82_08', false, 'everyday', { to: 7.5 }],   // then the person walks off
   ['walk', 'Walk', '02_01', true, 'everyday'],
   ['walk2', 'Walk (2)', '02_02', true, 'everyday'],
   ['run', 'Run', '02_03', true, 'everyday'],
@@ -40,9 +40,10 @@ const OUT = path.join(D, 'mocap/fitted');
 
 function combine() {
   const out = {};
-  for (const [id, label, trial, loop, group] of CLIPS) {
+  for (const [id, label, trial, loop, group, cut = {}] of CLIPS) {
     const f = path.join(OUT, id + '.json'); if (!fs.existsSync(f)) { console.log('not fitted yet:', id); continue; }
     const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+    c.qpos = c.qpos.slice(Math.round((cut.from || 0) * c.fps), cut.to ? Math.round(cut.to * c.fps) : undefined);
     out[id] = { label, group, loop, source: `CMU subject ${trial.split('_')[0]}, trial ${+trial.split('_')[1]}`, fps: c.fps, scale: c.scale, qpos: c.qpos.map(q => q.map(v => +v.toFixed(3))) };
   }
   const head = `/* Human movement examples for the Playground, fitted onto our body by tools/retarget.js (do not edit by hand).

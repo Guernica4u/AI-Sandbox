@@ -193,7 +193,7 @@ class Body3D {
     this.jq = Int32Array.from(this.joints, j => j.q); this.jdq = Int32Array.from(this.joints, j => j.dq);
     this.senseHist = Array.from({ length: HIST }, () => new Float32Array(SENSES)); this.excHist = Array.from({ length: HIST }, () => new Float64Array(NM));
     this.frame = 0; this.histFilled = false; this.prevHeadVel = null; this.limp = false; this.fallen = false;
-    this.drive = new Float64Array(NM); this.pending = new Float64Array(3 * this.nbody);
+    this.drive = new Float64Array(NM); this.pending = new Float64Array(3 * this.nbody); this.pendingT = new Float64Array(3 * this.nbody);
     this.energyMax = opts.energy || 14000; this.energyLeft = this.energyMax; this.used = 0; this.power = 0;
     this.hipsLow = opts.hipsLow || 0.78; this.intent = null;
     this.vel = new Float64Array(3 * this.nbody); this.prev = new Float64Array(3 * this.nbody);
@@ -307,6 +307,8 @@ class Body3D {
   shove(partId, ix, iy, iz = 0) { const b = this.ids[partId], P = this.pending; P[3 * b] += ix / DT; P[3 * b + 1] += iy / DT; P[3 * b + 2] += iz / DT; }
   /** A steady pull (N, world x/y/z) on a part for the next brain step (Test mode: dragging with the mouse). */
   pull(partId, fx, fy, fz) { const b = this.ids[partId], P = this.pending; P[3 * b] += fx; P[3 * b + 1] += fy; P[3 * b + 2] += fz; }
+  /** A steady turning force (N·m, world x/y/z) on a part for the next brain step (tests: the balance helper). */
+  twist(partId, tx, ty, tz) { const b = this.ids[partId], T = this.pendingT; T[3 * b] += tx; T[3 * b + 1] += ty; T[3 * b + 2] += tz; }
   /** A part's speed (m/s, world) over the last brain step. */
   partVel(partId) { const b = this.ids[partId]; return [this.vel[3 * b], this.vel[3 * b + 1], this.vel[3 * b + 2]]; }
   /** A joint's angle now. */
@@ -314,7 +316,7 @@ class Body3D {
   /** One brain step of physics: SUB sub-steps with the muscles' joint torques (after the motor nerve delay, plus the
       stretch reflex), shoves and the harness. */
   step() {
-    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc, P = this.pending, nb = this.nbody;
+    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc, P = this.pending, PT = this.pendingT, nb = this.nbody;
     const low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));   // running on empty: crippling
     this.excHist[this.frame % HIST].set(this.exc);
     const drive = this.drive;
@@ -328,7 +330,7 @@ class Body3D {
         const t0 = this.mus[2 * i].step(drive[2 * i] * (1 - 0.6 * this.mfat[2 * i]) * low, q, H), t1 = this.mus[2 * i + 1].step(drive[2 * i + 1] * (1 - 0.6 * this.mfat[2 * i + 1]) * low, q, H);
         this.mtq[2 * i] = t0; this.mtq[2 * i + 1] = t1; qf[this.jdq[i]] = t0 + t1;
       }
-      for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = 0; xf[6 * b + 4] = 0; xf[6 * b + 5] = 0; }
+      for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = PT[3 * b]; xf[6 * b + 4] = PT[3 * b + 1]; xf[6 * b + 5] = PT[3 * b + 2]; }
       if (this.assist > 0) {   // helping hands: hold the chest up and upright, like a parent holding a baby under the arms
         const a = this.assist, ch = this.ids.chest, xm = V.xmat, km = 9 * ch, cz = V.xpos[3 * ch + 2], vz = this.cvz || 0;
         xf[6 * ch + 2] += a * Math.max(0, Math.min(62 * 9.81, 4000 * (1.38 - cz) - 300 * vz));   // carries up to the whole weight
@@ -346,7 +348,7 @@ class Body3D {
       if (this.gripEq) this.applyGrip();
       this.mj.mj_step(this.model, this.data);
     }
-    P.fill(0);
+    P.fill(0); PT.fill(0);
     const p = V.xpos; for (let k = 0; k < 3 * nb; k++) this.vel[k] = (p[k] - this.prev[k]) / DT;
     this.cvz = this.vel[3 * this.ids.chest + 2];
     this.savePositions();

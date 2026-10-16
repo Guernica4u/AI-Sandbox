@@ -245,7 +245,10 @@ const GAMMA = 0.97, LAMBDA = 0.95, CLIP = 0.2;
 class Practice {
   constructor(mj, opts) {
     this.mj = mj; this.E = opts.envs || 2; this.T = opts.steps || 512;
-    this.envs = Array.from({ length: this.E }, (_, e) => new Env(mj, { taskId: opts.taskId, stage: opts.stage || 0, seed: (opts.seed || 1) * 1000 + e + 1, seconds: opts.seconds, assist: opts.assist, clip: opts.clip }));
+    // mixed practice: opts.specs gives each body its own skill ({ key, taskId, clip }); otherwise all practise one
+    const specs = opts.specs || Array.from({ length: this.E }, () => ({ key: opts.clip ? 'copy:' + opts.clip : opts.taskId, taskId: opts.taskId, clip: opts.clip }));
+    this.envs = specs.map((sp, e) => Object.assign(new Env(mj, { taskId: sp.taskId || 'stand', stage: (opts.stages && opts.stages[sp.key]) || opts.stage || 0, seed: (opts.seed || 1) * 1000 + e + 1,
+      seconds: sp.clip ? 10 : opts.seconds || B3.TASKS[sp.taskId || 'stand'].seconds, assist: opts.assist, clip: sp.clip }), { key: sp.key }));
     this.rng = Brain.makeRng((opts.seed || 1) * 7 + 3);
     const N = this.E * this.T, S = B3.SENSES, A = B3.MOTORS;
     this.obs = new Float32Array(N * S); this.act = new Float32Array(N * A); this.logp = new Float32Array(N);
@@ -258,7 +261,7 @@ class Practice {
     const sd = Float32Array.from(ls, Math.exp), a = new Float32Array(A);
     const rew = new Float32Array(E * T), done = new Uint8Array(E * T), vnext = new Float32Array(E);
     const episodes = [];
-    for (const env of this.envs) if (env.cfg.stage !== msg.stage) { env.setStage(msg.stage); }
+    for (const env of this.envs) { const st = msg.stages ? msg.stages[env.key] || 0 : msg.stage; if (env.cfg.stage !== st) env.setStage(st); }
     for (let t = 0; t < T; t++) for (let e = 0; e < E; e++) {
       const env = this.envs[e], k = e * T + t;   // stored per body, in time order
       this.obs.set(env.obs, k * S);
@@ -270,8 +273,8 @@ class Practice {
       let r = res.r;
       if (res.trunc) r += GAMMA * val.forward(env.obs)[0];   // time's up, not a fall: it would have kept earning
       rew[k] = r; done[k] = res.done || res.trunc ? 1 : 0;
-      // copying an example, keeping up for 3 s counts as coping
-      if (done[k]) { episodes.push({ ret: env.ret, secs: env.time, ok: !res.done || (!!env.ref && env.time >= 3) }); env.reset(); }
+      // coping: copying a person, keeping up for 3 s; a task, succeeding at it (standing: not falling)
+      if (done[k]) { episodes.push({ key: env.key, ret: env.ret, secs: env.time, ok: env.ref ? !res.done || env.time >= 3 : !res.done && (!env.task.success || !!env.task.success(env.st, env.body)) }); env.reset(); }
     }
     for (let e = 0; e < E; e++) vnext[e] = val.forward(this.envs[e].obs)[0];
     // advantages: how much better each moment went than the critic expected (GAE)
@@ -327,7 +330,7 @@ function newLearner(opts = {}) {
   const policy = opts.policy ? Float32Array.from(opts.policy) : B3.freshBrain(rng);
   const value = opts.value ? Float32Array.from(opts.value) : MLP.random(VALUE_SIZES, rng, 'linear', 0.1).params;
   const logstd = opts.logstd ? Float32Array.from(opts.logstd) : new Float32Array(B3.MOTORS).fill(Math.log(opts.wobble || 0.2));
-  return { policy, value, logstd, stage: opts.stage || 0, iteration: opts.iteration || 0, samples: opts.samples || 0,
+  return { policy, value, logstd, stage: opts.stage || 0, stages: Object.assign({}, opts.stages), iteration: opts.iteration || 0, samples: opts.samples || 0,
     optP: new Adam(policy.length + logstd.length, opts.lr || 3e-4), optV: new Adam(value.length, opts.lrV || 1e-3), history: opts.history || [] };
 }
 /** Sum the workers' gradient shares, keep the step sensible (norm clipping), update. */
@@ -345,7 +348,7 @@ function applyGrads(L, parts, maxNorm = 0.5) {
 }
 /** A brain file (the same kind the pages use) plus what's needed to keep practising. */
 function learnerToJSON(L, extra = {}) {
-  return Object.assign({ method: 'ppo', bodyPlan: B3.BODY.id, sizes: B3.SIZES, skill: 'stand', generation: L.iteration, stage: L.stage, samples: L.samples,
+  return Object.assign({ method: 'ppo', bodyPlan: B3.BODY.id, sizes: B3.SIZES, skill: 'stand', generation: L.iteration, stage: L.stage, stages: L.stages, samples: L.samples,
     params: Array.from(L.policy), logstd: Array.from(L.logstd), valueSizes: VALUE_SIZES, value: Array.from(L.value), history: L.history }, extra);
 }
 
