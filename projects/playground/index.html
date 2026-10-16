@@ -64,7 +64,7 @@
   <div class="tabs" id="modeTabs"><button data-mode="watch">Watch</button><button data-mode="train">Train</button><button data-mode="test">Test</button></div>
   <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label><span class="label">Practice</span><select id="example"><option value="">Stand (shoves)</option><option value="task:carry">Pick up and carry</option></select><label class="check" id="showPersonWrap" hidden><input type="checkbox" id="showPerson" checked> Show the person</label></div>
   <div class="controls" id="trainCtl" hidden><button class="go" id="trainBtn">Start training</button><span class="label" id="trainInfo"></span></div>
-  <div class="controls" id="testCtl" hidden><button id="brainBtn">Brain: on</button><button id="harnessBtn">Harness: on</button><button id="resetBtn">Reset body</button><button id="shove2">Shove</button><label class="check"><input type="checkbox" id="slow2"> Slow motion</label></div>
+  <div class="controls" id="testCtl" hidden><select id="idealPick"></select><button id="idealBtn">Play ideal</button><button id="brainBtn">Brain: on</button><button id="harnessBtn">Harness: on</button><button id="resetBtn">Reset body</button><button id="shove2">Shove</button><label class="check"><input type="checkbox" id="slow2"> Slow motion</label></div>
 </div>
 <main>
   <div id="stage"><canvas id="view"></canvas><div id="status"><span id="statusText">loading…</span></div><div id="loading">Loading physics…</div></div>
@@ -164,10 +164,11 @@ const Ghost = { clip: null, t: 0, body: new window.Body3D.Body3D(mj) };
 const setGhostVisible = v => { for (const g of Object.values(ghostGroups)) g.visible = v; };
 setGhostVisible(false);
 function poseGhost(dt) {
-  const tr = View.trial, copying = tr instanceof CopyTrial && App.mode !== 'test';
-  setGhostVisible(copying && $('#showPerson').checked);
-  if (copying) {   // exactly where the agent should be right now
-    const V = Ghost.body.views(); V.qpos.set(tr.env.ref.pose(tr.env.refT));
+  const tr = View.trial, copying = tr instanceof CopyTrial && App.mode !== 'test', ideal = App.mode === 'test' && Test.ideal;
+  setGhostVisible((copying && $('#showPerson').checked) || !!ideal);
+  if (copying || ideal) {   // exactly where the body should be right now
+    const V = Ghost.body.views(); V.qpos.set(ideal ? ideal.ref.pose(ideal.t) : tr.env.ref.pose(tr.env.refT));
+    if (ideal && Test.harness) { const h = body().harness; V.qpos[0] = h.x; V.qpos[1] = h.y; }   // in the harness it stays put
     mj.mj_kinematics(Ghost.body.model, Ghost.body.data);
     for (const p of BODY.parts) { const { pos, quat } = Ghost.body.pose(p.id), g = ghostGroups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
     return;
@@ -231,8 +232,30 @@ const body = () => View.trial && View.trial.agents[0].body;
 /* ================= Test: move it yourself (never changes a brain) ================= */
 const Test = { brainOn: true, harness: true, override: {}, drag: null };
 function startTest() {
-  Test.override = {}; newTrial({ hard: 0, assist: 0, noise: 0, override: Test.override });
-  View.trial.brainOff = !Test.brainOn; body().setHarness(Test.harness); buildJoints();
+  Test.override = {}; Test.ideal = null; newTrial({ hard: 0, assist: 0, noise: 0, override: Test.override });
+  View.trial.brainOff = !Test.brainOn; body().setHarness(Test.harness); buildJoints(); renderUI();
+}
+/* Play ideal: takes the body over and plays a recorded person on it. The body starts in the person's pose and moving
+   with them; each joint is then steered along the recording by its own two muscles (no puppet strings). In the
+   harness it can't fall; without it, this shows whether copying the joints alone keeps a body up (it usually doesn't:
+   balance is what the agents have to learn). Never trains anything. */
+function playIdeal() {
+  const id = $('#idealPick').value, c = CLIPS[id]; if (!c) return;
+  startTest();
+  const ref = new window.Learn.Reference(c, c.loop), b = body(), V = b.views(), q = ref.pose(0), v = ref.vel(0, new Float64Array(q.length));
+  V.qpos.set(q); V.qvel.fill(0); V.qvel[0] = v[0]; V.qvel[1] = v[1]; V.qvel[2] = v[2];
+  for (const j of b.joints) V.qvel[j.dq] = v[j.q];
+  mj.mj_forward(b.model, b.data); b.savePositions();
+  for (let k = 0; k < 400; k++) for (let m = 0; m < window.Body3D.NM; m++) b.mus[m].step(0.1, V.qpos[b.jq[m >> 1]], 1 / 400);
+  if (Test.harness) b.setHarness(true);
+  Test.ideal = { id, ref, t: 0 }; View.trial.brainOff = true; renderUI();
+}
+function stepIdeal() {
+  const I = Test.ideal; if (!I) return;
+  I.t += window.Body3D.DT;
+  if (I.t > I.ref.length) { Test.ideal = null; for (const k in Test.override) delete Test.override[k]; View.trial.brainOff = !Test.brainOn; renderUI(); return; }
+  const q = I.ref.pose(I.t);
+  for (const j of body().joints) Test.override[j.spec.id] = q[j.q];
 }
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 function pointerRay(e) { const r = canvas.getBoundingClientRect(); pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); raycaster.setFromCamera(pointer, camera); }
@@ -365,6 +388,7 @@ function renderUI() {
   $('#trainBtn').classList.toggle('go', !Train.running);
   $('#trainInfo').textContent = live ? `generation ${Train.evo.generation} · ${Train.genSecs.toFixed(1)} s per generation · ${Pool.workers ? Pool.workers.length : 0} cores · keep this tab open` : Train.running ? 'training another agent' : '';
   $('#brainBtn').textContent = `Brain: ${Test.brainOn ? 'on (reacts)' : 'off (limp)'}`; $('#brainBtn').classList.toggle('on', !Test.brainOn);
+  $('#idealBtn').textContent = Test.ideal ? 'Stop ideal' : 'Play ideal'; $('#idealBtn').classList.toggle('on', !!Test.ideal);
   $('#harnessBtn').textContent = `Harness: ${Test.harness ? 'on' : 'off'}`; $('#harnessBtn').classList.toggle('on', Test.harness);
   $('#check').textContent = Check.running ? 'Checking…' : 'Success check';
   $('#stGen').textContent = a.brain ? a.brain.generation : 0;
@@ -432,12 +456,14 @@ $('#trainBtn').onclick = () => { if (Train.running) Train.stop(); else Train.sta
 $('#brainBtn').onclick = () => { Test.brainOn = !Test.brainOn; if (View.trial) View.trial.brainOff = !Test.brainOn; renderUI(); };
 $('#harnessBtn').onclick = () => { Test.harness = !Test.harness; body() && body().setHarness(Test.harness); renderUI(); };
 $('#resetBtn').onclick = startTest;
+$('#idealPick').innerHTML = Object.entries(CLIPS).map(([id, c]) => `<option value="${id}">${c.label}</option>`).join('');
+$('#idealBtn').onclick = () => { if (Test.ideal) startTest(); else playIdeal(); };
 
 /* ================= the loop ================= */
 let acc = 0, last = 0, slowTick = 0;
 function stepOnce(now) {
   const ag = View.trial.agents[0];
-  if (App.mode === 'test') { ag.done = false; ag.body.fallen = false; ag.body.energyLeft = ag.body.energyMax; applyDrag(); }   // testing never ends
+  if (App.mode === 'test') { ag.done = false; ag.body.fallen = false; ag.body.energyLeft = ag.body.energyMax; applyDrag(); stepIdeal(); }   // testing never ends
   else {
     if (ag.done && !View.endAt) View.endAt = now + 1500;   // fell: watch it land, then try again
     if (View.endAt && now > View.endAt) { newTrial(); return; }   // (while training, each new try uses the best brain so far)
@@ -461,7 +487,8 @@ function frame(now) {
     slowTick = now;
     const a = agent(), tr = View.trial, mode = App.mode;
     $('#statusText').textContent = mode === 'test'
-      ? `TEST · ${a.name} · ${Test.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'}${Test.harness ? ' · in the harness' : ''} · drag any part`
+      ? Test.ideal ? `TEST · playing the ideal: ${CLIPS[Test.ideal.id].label.toLowerCase()} · ${Test.ideal.t.toFixed(1)} of ${Test.ideal.ref.length === Infinity ? '∞' : Test.ideal.ref.length.toFixed(1)} s · its own muscles follow the person${Test.harness ? ' · in the harness' : ' · no harness'}`
+      : `TEST · ${a.name} · ${Test.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'}${Test.harness ? ' · in the harness' : ''} · drag any part`
       : `${mode === 'train' && Train.running ? 'TRAINING · replaying the best so far · ' : ''}${a.name} · ${tr.time.toFixed(1)} s · ${tr instanceof CopyTrial ? tr.describe() : TASKS[tr.taskId].describe(tr.agents[0].st, b)}`;
     $('#stEnergy').textContent = mode === 'test' ? `${Math.round(b.power)} W` : `${Math.round(100 * b.energyLeft / b.energyMax)}% · ${Math.round(b.power)} W`;
     $('#stTired').textContent = `tired: legs ${Math.round(b.tiredness('legs') * 100)}% · arms ${Math.round(b.tiredness('arms') * 100)}%`;
