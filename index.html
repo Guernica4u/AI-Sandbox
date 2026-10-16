@@ -185,10 +185,14 @@ const ENVS = [
     desc: 'Physical bodies moved by 20 realistic muscles (human strength, springy tendons) in MuJoCo physics. Muscles cost energy and get tired. Each agent learns to stand, walk to food, jump for fruit and pick up a glass of water. Move their limbs and see how they react.',
     agents: 'Nova (examples retraining)', learns: 'Neuroevolution', goal: 'Stand, walk to food, jump, pick up the glass',
     href: 'projects/embodied-2d/index.html', cta: 'Enter the lab' },
-  { id: 'e3d', name: 'Embodied 3D', hue: '#ff6a3d', tags: ['Bodies', 'Physics', 'Civilization'], canvas: 'walker',
-    desc: 'The goal: the same learning bodies in 3D, running a civilization together. Built on what Embodied 2D proves out.',
-    agents: 'TBD', learns: 'Neuroevolution (motor control)', goal: 'Build a civilization',
-    href: 'projects/embodied-3d/index.html', cta: 'Planned', status: 'dev' },
+  { id: 'pg', name: 'Playground', hue: '#ff6a3d', tags: ['Bodies', 'Physics', '3D'], canvas: 'walker',
+    desc: 'A 3D lab for one body with 62 realistic muscles. Agents learn to stand, walk and carry by copying real people from a motion-capture library, with their own muscles. Drag their limbs, play the ideal movement, watch them learn.',
+    agents: 'Nova + your own', learns: 'Learning from experience (PPO), copying people', goal: 'Move like a person',
+    href: 'projects/playground/index.html', cta: 'Enter the playground' },
+  { id: 'village', name: 'Village', hue: '#8fb86b', tags: ['Civilization', 'Physics', '3D'], canvas: 'walker',
+    desc: 'The first small civilization: a few agents sharing a world with trees, stones, berry bushes and a pond. Knock sticks off trees, crack stones, join things into tools. Hunger, thirst and injuries are real. Early version: the world works, the agents are still learning to walk.',
+    agents: 'Ash · Fern · Rowan · Wren', learns: 'Movement brain (in training)', goal: 'Survive, make tools, build',
+    href: 'projects/village/index.html', cta: 'Enter the village' },
 ];
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

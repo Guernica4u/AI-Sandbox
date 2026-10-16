@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Village · Glass Box</title>
+<style>
+  :root { --bg: #0d0f12; --panel: #14171c; --line: #262b33; --text: #e8e6e1; --muted: #8a8f98; --hue: #8fb86b; --signal: #ff6a3d; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  header a { color: var(--muted); text-decoration: none; border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; }
+  h1 { font-size: 15px; margin: 0; letter-spacing: .03em; }
+  h1 span { color: var(--hue); }
+  .label { color: var(--muted); font: 11px ui-monospace, monospace; letter-spacing: .06em; text-transform: uppercase; }
+  select, button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button.on { border-color: var(--hue); color: var(--hue); }
+  button.go { background: var(--hue); color: #0d0f12; border-color: var(--hue); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  main { display: grid; grid-template-columns: 1fr 320px; min-height: calc(100vh - 110px); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  #stage { position: relative; min-height: 440px; }
+  #view { width: 100%; height: 100%; display: block; position: absolute; inset: 0; cursor: grab; }
+  #view.dragging { cursor: grabbing; }
+  #status { position: absolute; left: 14px; bottom: 12px; right: 14px; color: var(--muted); font: 12px ui-monospace, monospace; pointer-events: none; }
+  #status span { background: rgba(13,15,18,.75); padding: 5px 9px; border-radius: 6px; }
+  #loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
+  aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  @media (max-width: 860px) { aside { border-left: 0; border-top: 1px solid var(--line); } }
+  .section { padding: 12px; border-bottom: 1px solid var(--line); }
+  .agents { display: flex; flex-direction: column; gap: 6px; }
+  .agent { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+  .agent.sel { border-color: var(--hue); }
+  .agent .top { display: flex; justify-content: space-between; gap: 8px; }
+  .agent .doing { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .meters { display: grid; grid-template-columns: 52px 1fr; gap: 3px 8px; align-items: center; font: 11px ui-monospace, monospace; color: var(--muted); margin-top: 4px; }
+  .meter { height: 6px; background: #1d2128; border-radius: 3px; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--hue); }
+  .meter.low i { background: var(--signal); }
+  #events { font: 12px ui-monospace, monospace; color: var(--muted); overflow-y: auto; flex: 1; padding: 12px; }
+  #events div { padding: 2px 0; border-bottom: 1px dashed #1d2128; }
+  .note { color: var(--muted); }
+  .note strong { color: var(--text); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; max-width: 460px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog label { display: block; margin: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <a href="../../index.html">← Hub</a>
+  <h1>GLASS BOX / <span>VILLAGE</span></h1>
+  <span class="label" style="margin-left:auto">early version: the world works; the agents can't walk yet</span>
+</header>
+<div class="bar">
+  <button id="playBtn">Pause</button>
+  <select id="speed"><option value="0.25">Slow motion</option><option value="1" selected>Real time</option><option value="2">2× (if your computer keeps up)</option></select>
+  <button id="helpBtn" class="on">Helping hands: on</button>
+  <button id="newBtn" class="go">New village…</button>
+  <span class="label">Drag anything with the mouse: agents, sticks, stones</span>
+</div>
+<main>
+  <div id="stage"><canvas id="view"></canvas><div id="status"><span id="statusText">loading…</span></div><div id="loading">Loading physics…</div></div>
+  <aside>
+    <div class="section note" id="about"><strong>A first village.</strong> Trees, stones, berry bushes and a pond. Hit a tree to knock sticks loose (harder with something in your hand); crack stones on stones for sharp pieces; press two held things together to join them; berries and water to the mouth. Hunger, thirst and hard knocks hurt. Nobody tells them any of this.</div>
+    <div class="section"><div class="label" style="margin-bottom:6px">Agents</div><div class="agents" id="agents"></div></div>
+    <div class="label" style="padding:12px 12px 0">What happened</div>
+    <div id="events"></div>
+  </aside>
+</main>
+<dialog id="newDlg">
+  <form method="dialog">
+    <h3 style="margin-top:0">New village</h3>
+    <label>Agents <select id="nAgents"><option>2</option><option>3</option><option selected>4</option></select></label>
+    <label><input type="radio" name="born" value="fresh" checked> <strong>Learn everything</strong>: brand-new brains (they can't even stand)</label>
+    <label><input type="radio" name="born" value="playground"> <strong>Born able to move</strong>: copy a Playground agent's brain <select id="pgAgent"></select></label>
+    <label><input type="radio" name="born" value="file"> <strong>Born able to move</strong>: a brain file (e.g. training/movement.json) <input type="file" id="brainFile" accept=".json"></label>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px"><button value="cancel">Cancel</button><button value="ok" class="go">Start</button></div>
+  </form>
+</dialog>
+
+<script src="../embodied-2d/vendor/mujoco.js"></script>
+<script src="../embodied-2d/brain.js"></script>
+<script src="../embodied-2d/muscle.js"></script>
+<script src="../playground/body3d.js"></script>
+<script src="village.js"></script>
+<script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+const $ = s => document.querySelector(s);
+const mj = await loadMujocoClassic();
+const { BODY, SIZES, DT } = window.Body3D, { Village, LAYOUT, KINDS } = window.Village, { fromBase64 } = window.Brain;
+$('#loading').remove();
+const NAMES = ['Ash', 'Fern', 'Rowan', 'Wren'];
+
+/* ================= the 3D view (MuJoCo is z-up; the world group turns it so three's y is up) ================= */
+const canvas = $('#view'), renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.shadowMap.enabled = true;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0d0f12); scene.fog = new THREE.Fog(0x0d0f12, 18, 45);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 200); camera.position.set(9, 8, 13);
+const controls = new OrbitControls(camera, canvas); controls.target.set(0, 0.6, -1); controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x2a2e35, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(8, 14, 6); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 15, bottom: -15 }); scene.add(sun);
+const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
+const mat = (color, rough = 0.85, extra) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: rough }, extra));
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), mat(0x1b1f25, 1)); ground.receiveShadow = true; world.add(ground);
+const grid = new THREE.GridHelper(80, 80, 0x2c323b, 0x22272e); grid.rotation.x = Math.PI / 2; grid.position.z = 0.001; world.add(grid);
+const shadowed = m => { m.castShadow = true; m.receiveShadow = true; return m; };
+// scenery
+const pond = new THREE.Mesh(new THREE.CircleGeometry(LAYOUT.pond.r, 48), mat(0x2b4a5c, 0.2, { transparent: true, opacity: 0.85 }));
+pond.position.set(LAYOUT.pond.x, LAYOUT.pond.y, 0.004); world.add(pond);
+const treeMeshes = LAYOUT.trees.map(t => {
+  const g = new THREE.Group(), trunk = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(t.r, t.r * 1.15, t.h, 14), mat(0x5e5143)));
+  trunk.rotation.x = Math.PI / 2; trunk.position.z = t.h / 2; g.add(trunk);
+  for (const [dx, dy, dz, r] of [[0, 0, t.h + 0.2, 1.1], [0.5, 0.2, t.h - 0.3, 0.8], [-0.4, -0.3, t.h - 0.2, 0.8]]) { const c = shadowed(new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), mat(0x3b5236))); c.position.set(dx, dy, dz); g.add(c); }
+  g.position.set(t.x, t.y, 0); world.add(g); return g;
+});
+const berryMat = mat(0xb03a3a, 0.5);
+const bushMeshes = LAYOUT.bushes.map(b => {
+  const g = new THREE.Group(), s = shadowed(new THREE.Mesh(new THREE.SphereGeometry(b.r, 18, 14), mat(0x34492f))); s.position.z = b.r * 0.7; g.add(s);
+  const berries = Array.from({ length: 6 }, (_, k) => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 6), berryMat), a = k * 1.05; m.position.set(Math.cos(a) * b.r * 0.85, Math.sin(a) * b.r * 0.85, b.r * (0.75 + 0.15 * Math.sin(k * 2.3))); g.add(m); return m; });
+  g.position.set(b.x, b.y, 0); world.add(g); return { g, berries };
+});
+// pooled objects
+const KIND_LOOK = { stick: mat(0x9a8162), log: mat(0x6e5a44), stone: mat(0x8a8f98, 0.9), shard: mat(0x6f747c, 0.6), berry: berryMat };
+function objectMesh(o) {
+  const geo = o.shape === 'capsule' ? new THREE.CapsuleGeometry(o.size[0], 2 * o.size[1], 4, 10) : o.kind === 'shard' ? new THREE.IcosahedronGeometry(o.size[0], 0) : new THREE.SphereGeometry(o.size[0], 14, 10);
+  const m = shadowed(new THREE.Mesh(geo, KIND_LOOK[o.kind]));
+  if (o.shape === 'capsule') { const g = new THREE.Group(); m.rotation.x = Math.PI / 2; g.add(m); g.userData.obj = o; m.userData.obj = o; return g; }
+  m.userData.obj = o; return m;
+}
+// agent figures (the Playground's mannequin)
+const skin = mat(0xd9d4ca, 0.6), sole = mat(0xa9a49a, 0.7), deadSkin = mat(0x6b6964, 0.8);
+function buildFigure(agentIndex, pickables) {
+  const groups = {};
+  for (const p of BODY.parts) {
+    const g = new THREE.Group(); groups[p.id] = g; world.add(g);
+    for (const s of p.geoms) {
+      let mesh;
+      if (s.type === 'box') { mesh = new THREE.Mesh(new RoundedBoxGeometry(2 * s.size[0], 2 * s.size[1], 2 * s.size[2], 4, s.soft || 0.01), p.foot || p.toes ? sole : skin); mesh.position.set(s.pos[0] - p.pos[0], s.pos[1] - p.pos[1], s.pos[2] - p.pos[2]); }
+      else if (s.type === 'sphere') { mesh = new THREE.Mesh(new THREE.SphereGeometry(s.r, 24, 16), skin); mesh.position.set(s.pos[0] - p.pos[0], s.pos[1] - p.pos[1], s.pos[2] - p.pos[2]); }
+      else {
+        const a = new THREE.Vector3(...s.from).sub(new THREE.Vector3(...p.pos)), b = new THREE.Vector3(...s.to).sub(new THREE.Vector3(...p.pos));
+        mesh = new THREE.Mesh(new THREE.CapsuleGeometry(s.r, a.distanceTo(b), 6, 12), skin);
+        mesh.position.copy(a).add(b).multiplyScalar(0.5); mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+      }
+      mesh.castShadow = true; mesh.userData.agent = agentIndex; mesh.userData.part = p.id; g.add(mesh); pickables.push(mesh);
+    }
+  }
+  return groups;
+}
+const selRing = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 40), new THREE.MeshBasicMaterial({ color: 0x8fb86b, side: THREE.DoubleSide })); selRing.position.z = 0.01; world.add(selRing);
+
+/* ================= the village ================= */
+const S = { v: null, figures: [], objMeshes: [], pickables: [], running: true, speed: 1, help: 1, sel: 0, brains: null };
+function clearScene() {
+  for (const fig of S.figures) for (const g of Object.values(fig)) world.remove(g);
+  for (const m of S.objMeshes) world.remove(m);
+  S.figures = []; S.objMeshes = []; S.pickables = [];
+}
+function startVillage(n, brains) {
+  if (S.v) S.v.free(); clearScene();
+  S.v = new Village(mj, { agents: n, brains, help: S.help, names: NAMES, seed: (Math.random() * 1e9) | 0 });
+  S.figures = S.v.agents.map((_, i) => buildFigure(i, S.pickables));
+  S.objMeshes = S.v.objects.map(o => { const m = objectMesh(o); world.add(m); S.pickables.push(m.children && m.children[0] ? m.children[0] : m); return m; });
+  S.sel = 0; S.lastEvent = 0; $('#events').innerHTML = ''; buildAgentList();
+}
+function buildAgentList() {
+  $('#agents').innerHTML = S.v.agents.map((a, i) => `<div class="agent" data-i="${i}"><div class="top"><strong>${a.name}</strong><span class="label" id="ag-st-${i}"></span></div>
+    <div class="doing" id="ag-do-${i}"></div>
+    <div class="meters"><span>health</span><div class="meter" id="ag-h-${i}"><i></i></div><span>food</span><div class="meter" id="ag-f-${i}"><i></i></div><span>water</span><div class="meter" id="ag-w-${i}"><i></i></div></div></div>`).join('');
+  $('#agents').querySelectorAll('.agent').forEach(el => el.onclick = () => { S.sel = +el.dataset.i; });
+}
+function meter(id, v) { const el = document.getElementById(id); if (!el) return; el.firstChild.style.width = `${Math.round(v * 100)}%`; el.classList.toggle('low', v < 0.25); }
+function heldName(ag, sd) { const h = ag.body.heldBy(sd); return h >= 0 ? S.v.byId[h].kind : null; }
+
+/* ================= drag anything (agents, objects) with the mouse ================= */
+const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2(), toMj = v => [v.x, -v.z, v.y];
+let drag = null;
+function ray(e) { const r = canvas.getBoundingClientRect(); pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); raycaster.setFromCamera(pointer, camera); }
+canvas.addEventListener('pointerdown', e => {
+  if (!S.v) return; ray(e);
+  const hit = raycaster.intersectObjects(S.pickables, false)[0]; if (!hit) return;
+  const u = hit.object.userData;
+  if (u.agent !== undefined) S.sel = u.agent;
+  const target = u.obj ? S.objMeshes[S.v.objects.indexOf(u.obj)] : S.figures[u.agent][u.part];
+  drag = { u, local: target.worldToLocal(hit.point.clone()), target, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), hit.point), to: hit.point.clone() };
+  controls.enabled = false; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => { if (!drag) return; ray(e); const p = new THREE.Vector3(); if (raycaster.ray.intersectPlane(drag.plane, p)) drag.to.copy(p); });
+const endDrag = () => { drag = null; controls.enabled = true; canvas.classList.remove('dragging'); };
+canvas.addEventListener('pointerup', endDrag); canvas.addEventListener('pointercancel', endDrag);
+function applyDrag() {
+  if (!drag || !S.v) return;
+  const point = drag.target.localToWorld(drag.local.clone()), d = toMj(drag.to.clone().sub(point));
+  if (drag.u.obj) {   // objects: a spring on the object (its own force slot; no body writes there)
+    const o = drag.u.obj, v = S.v.vel(o), m = o.mass, xf = S.v.data.xfrc_applied;
+    for (let k = 0; k < 3; k++) xf[6 * o.id + k] = m * (60 * d[k] - 8 * v[k]) + (k === 2 ? m * 9.81 : 0);
+  } else {
+    const b = S.v.agents[drag.u.agent].body, v = b.partVel(drag.u.part), fz = d.map((x, k) => 1500 * x - 80 * v[k]), mag = Math.hypot(...fz);
+    if (mag > 900) for (let k = 0; k < 3; k++) fz[k] *= 900 / mag;
+    b.pull(drag.u.part, fz[0], fz[1], fz[2]);
+  }
+}
+function clearObjectForces() { const xf = S.v.data.xfrc_applied; for (const o of S.v.objects) for (let k = 0; k < 6; k++) xf[6 * o.id + k] = 0; }
+
+/* ================= controls ================= */
+$('#playBtn').onclick = () => { S.running = !S.running; $('#playBtn').textContent = S.running ? 'Pause' : 'Play'; };
+$('#speed').onchange = e => { S.speed = +e.target.value; };
+$('#helpBtn').onclick = () => { S.help = S.help ? 0 : 1; for (const a of S.v.agents) a.body.assist = S.help; $('#helpBtn').textContent = `Helping hands: ${S.help ? 'on' : 'off'}`; $('#helpBtn').classList.toggle('on', !!S.help); };
+// brains: from a Playground agent (same browser), or a brain file
+function playgroundAgents() { try { const d = JSON.parse(localStorage.getItem('glassbox-playground/v2') || 'null'); return d ? d.agents.filter(a => a.brain) : []; } catch (e) { return []; } }
+const unpack = j => { if (j.weights) j = Object.assign({}, j, { params: Array.from(fromBase64(j.weights)) }); return Array.isArray(j.params) && j.sizes && j.sizes.join() === SIZES.join() ? j.params : null; };
+$('#newBtn').onclick = () => {
+  const pg = playgroundAgents();
+  $('#pgAgent').innerHTML = pg.length ? pg.map(a => `<option value="${a.id}">${a.name} (gen ${a.brain.generation})</option>`).join('') : '<option value="">(no trained Playground agents)</option>';
+  $('#newDlg').showModal();
+};
+$('#newDlg').addEventListener('close', async () => {
+  if ($('#newDlg').returnValue !== 'ok') return;
+  const n = +$('#nAgents').value, born = document.querySelector('input[name=born]:checked').value;
+  let params = null;
+  try {
+    if (born === 'playground') { const a = playgroundAgents().find(x => x.id === $('#pgAgent').value); params = a && unpack(a.brain); }
+    if (born === 'file') { const f = $('#brainFile').files[0]; params = f && unpack(JSON.parse(await f.text())); }
+  } catch (e) { params = null; }
+  if (born !== 'fresh' && !params) { alert('That brain could not be used (it may be for a different body).'); return; }
+  startVillage(n, params ? Array.from({ length: n }, () => params) : null);
+});
+
+/* ================= the loop ================= */
+let acc = 0, last = 0, uiTick = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
+  if (S.v && S.running) {
+    acc += dt * S.speed; let n = 0;
+    while (acc >= DT && n++ < 6) { applyDrag(); S.v.step(); clearObjectForces(); acc -= DT; }
+    if (n >= 6) acc = 0;   // can't keep up: run slower rather than freeze
+  }
+  if (S.v) {
+    const V = S.v;
+    V.agents.forEach((ag, i) => { const fig = S.figures[i]; for (const p of BODY.parts) { const { pos, quat } = ag.body.pose(p.id), g = fig[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); } });
+    V.objects.forEach((o, i) => { const m = S.objMeshes[i]; m.visible = !o.gone; if (o.gone) return; const p = V.pos(o), q = V.quat(o); m.position.set(...p); m.quaternion.set(q[1], q[2], q[3], q[0]); });
+    V.trees.forEach((t, i) => { treeMeshes[i].visible = !t.felled; });
+    V.bushes.forEach((b, i) => bushMeshes[i].berries.forEach((m, k) => { m.visible = k < b.berries; }));
+    const sa = V.agents[S.sel], sp = sa.body.pose('pelvis').pos; selRing.position.set(sp[0], sp[1], 0.01);
+  }
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * renderer.getPixelRatio()) || canvas.height !== Math.round(h * renderer.getPixelRatio())) { renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+  controls.update(); renderer.render(scene, camera);
+  if (S.v && now - uiTick > 250) { uiTick = now; updateUI(); }
+}
+function updateUI() {
+  const V = S.v, mins = Math.floor(V.time / 60), secs = Math.floor(V.time % 60);
+  $('#statusText').textContent = `day 1 · ${mins}:${String(secs).padStart(2, '0')} · ${V.agents.filter(a => a.alive).length} of ${V.agents.length} alive · ${V.trees.filter(t => !t.felled).length} trees · ${V.objects.filter(o => !o.gone && o.kind === 'stick').length} sticks · ${V.objects.filter(o => !o.gone && o.kind === 'stone').length} stones`;
+  V.agents.forEach((a, i) => {
+    meter(`ag-h-${i}`, a.health); meter(`ag-f-${i}`, a.food); meter(`ag-w-${i}`, a.water);
+    const st = document.getElementById(`ag-st-${i}`); if (st) st.textContent = !a.alive ? 'dead' : a.body.fallen || a.body.pose('head').pos[2] < 1.1 ? 'down' : 'up';
+    const held = ['L', 'R'].map(sd => heldName(a, sd)).filter(Boolean);
+    const d = document.getElementById(`ag-do-${i}`); if (d) d.textContent = [a.doing, held.length ? `holding ${held.join(' and ')}` : ''].filter(Boolean).join(' · ');
+  });
+  $('#agents').querySelectorAll('.agent').forEach(el => el.classList.toggle('sel', +el.dataset.i === S.sel));
+  const ev = V.events;
+  if (ev.length > S.lastEvent) {
+    const box = $('#events');
+    for (let k = S.lastEvent; k < ev.length; k++) { const e = ev[k], div = document.createElement('div'); div.textContent = `${Math.floor(e.t / 60)}:${String(Math.floor(e.t % 60)).padStart(2, '0')}  ${e.text}`; box.prepend(div); }
+    S.lastEvent = ev.length; while (box.children.length > 60) box.lastChild.remove();
+  }
+}
+startVillage(4, null);
+requestAnimationFrame(frame);
+window.__village = S;
+</script>
+</body>
+</html>
