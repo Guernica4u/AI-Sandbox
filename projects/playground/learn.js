@@ -98,12 +98,20 @@ const REWARDS = {
     const b = env.body, p = b.pose('pelvis').pos, drift2 = (p[0] - env.start[0]) ** 2 + (p[1] - env.start[1]) ** 2;
     return 0.5 + 0.2 * Math.exp(-10 * b.lean() ** 2) + 0.2 * Math.exp(-drift2 / 0.02) + 0.1 * Math.exp(-Math.max(0, b.power - 150) / 600);
   },
+  /** Pick up and carry: hands near the box, holding it, lifting it, then taking it to the spot, while staying upright. */
+  carry(env) {
+    const b = env.body, st = env.st, box = b.boxPose().pos, hold = b.holding();
+    const near = Math.min(b.boxDist(b.handPos('L')).dist, b.boxDist(b.handPos('R')).dist) - B3.HAND.r;
+    const lift = hold ? Math.max(0, Math.min(1, (box[2] - st.z0) / 0.3)) : 0, carry = hold ? Math.max(0, Math.min(1, (box[0] - st.x0) / env.task.carryTo)) : 0;
+    return 0.1 + 0.15 * Math.exp(-10 * Math.max(0, near) ** 2) + 0.1 * hold / 2 + 0.25 * lift + 0.3 * carry + 0.1 * Math.exp(-10 * b.lean() ** 2);
+  },
 };
 /* ---------- a human example to copy (a clip from mocap/clips.js) ----------
    Walking and running are repeated: the clip's best-matching stretch (where the pose at the end is closest to the
    pose at the start, about a stride pair long) is looped, moving on by one stride pair each time round. Other clips
    play once. */
-const CLIP_INTENT = { walk: 'walk', walk2: 'walk', run: 'walk', jump: 'jump' };
+// what it's trying to do (the body's 3 intent senses: walk, jump, grab), by example
+const CLIP_INTENT = { walk: 'walk', walk2: 'walk', run: 'walk', navigate: 'walk', crouchwalk: 'walk', stairs: 'walk', jump: 'jump', hop: 'jump', reach: 'grab', pickup: 'grab', lift: 'grab', carry: 'grab', suitcase: 'grab' };
 class Reference {
   constructor(clip, loop) {
     this.fps = clip.fps; this.q = clip.qpos; this.n = this.q.length; this.loop = !!loop;
@@ -153,7 +161,7 @@ class Env {
     this.rng = Brain.makeRng(cfg.seed || 1); this.obs = new Float32Array(B3.SENSES); this.body = null;
     if (this.cfg.clip) {
       const c = clips()[this.cfg.clip]; if (!c) throw new Error('no example clip ' + this.cfg.clip);
-      this.ref = new Reference(c, this.cfg.clip !== 'jump');
+      this.ref = new Reference(c, c.loop !== undefined ? c.loop : this.cfg.clip !== 'jump');
       this.refData = new mj.MjData(this.model); this.refQ = new Float64Array(c.qpos[0].length); this.refV = new Float64Array(c.qpos[0].length);
     }
     this.reset();
@@ -163,8 +171,12 @@ class Env {
     if (this.body) this.body.free();
     const st = this.cfg.stage; this.hard = this.ref ? 0 : B3.hardness(st); this.noise = 0.02 * this.hard;
     this.task = B3.TASKS[this.cfg.taskId];
+    if (this.task.world) {   // tasks with objects (the box and its stand): rebuild the world when the difficulty moves them
+      const key = JSON.stringify(this.task.layout(this));
+      if (key !== this.worldKey) { this.model.delete(); this.model = this.mj.MjModel.from_xml_string(B3.worldXML(this.task.world(this))); this.worldKey = key; }
+    }
     this.body = new B3.Body3D(this.mj, { model: this.model, energy: this.task.energy * (1 + 4 * (1 - this.hard)) });
-    this.body.assist = this.cfg.assist !== undefined ? this.cfg.assist : this.ref ? 0 : B3.assistFor(st);
+    this.body.assist = this.cfg.assist !== undefined ? this.cfg.assist : B3.assistFor(st);   // helping hands, fading as it copes (copying too: they hold it up, not forward)
     const V = this.body.views();
     if (this.ref) {   // start somewhere in the example, already in its pose and moving with it (as in DeepMimic)
       const t0 = this.ref.loop ? this.rng() * this.ref.period : this.rng() * Math.max(0.01, this.ref.period - 0.6);
@@ -255,7 +267,8 @@ class Practice {
       let r = res.r;
       if (res.trunc) r += GAMMA * val.forward(env.obs)[0];   // time's up, not a fall: it would have kept earning
       rew[k] = r; done[k] = res.done || res.trunc ? 1 : 0;
-      if (done[k]) { episodes.push({ ret: env.ret, secs: env.time, ok: !res.done }); env.reset(); }
+      // copying an example, keeping up for 3 s counts as coping
+      if (done[k]) { episodes.push({ ret: env.ret, secs: env.time, ok: !res.done || (!!env.ref && env.time >= 3) }); env.reset(); }
     }
     for (let e = 0; e < E; e++) vnext[e] = val.forward(this.envs[e].obs)[0];
     // advantages: how much better each moment went than the critic expected (GAE)
@@ -310,7 +323,7 @@ function newLearner(opts = {}) {
   const rng = Brain.makeRng(opts.seed || 1);
   const policy = opts.policy ? Float32Array.from(opts.policy) : B3.freshBrain(rng);
   const value = opts.value ? Float32Array.from(opts.value) : MLP.random(VALUE_SIZES, rng, 'linear', 0.1).params;
-  const logstd = opts.logstd ? Float32Array.from(opts.logstd) : new Float32Array(B3.MOTORS).fill(Math.log(0.3));
+  const logstd = opts.logstd ? Float32Array.from(opts.logstd) : new Float32Array(B3.MOTORS).fill(Math.log(opts.wobble || 0.2));
   return { policy, value, logstd, stage: opts.stage || 0, iteration: opts.iteration || 0, samples: opts.samples || 0,
     optP: new Adam(policy.length + logstd.length, opts.lr || 3e-4), optV: new Adam(value.length, opts.lrV || 1e-3), history: opts.history || [] };
 }

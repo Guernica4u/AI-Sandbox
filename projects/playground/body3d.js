@@ -127,12 +127,19 @@ function bodyXML(opts = {}) {
     p.geoms.map(g => geomXML(p, g)).join('') + (kids[p.id] || []).map(k => bodyX(k, p.pos)).join('') + '</body>';
   return bodyX(BODY.parts.find(p => !p.parent));
 }
+/** The world: ground, the body, and any task objects (opts.objects, MJCF). opts.grip: the hands can hold the "box". */
 function worldXML(opts = {}) {
   return `<mujoco model="glassbox-playground"><compiler angle="radian" inertiafromgeom="true"/>
 <option timestep="${H}" integrator="implicitfast" noslip_iterations="3"/>
 <worldbody><light pos="0 0 4" dir="0 0 -1"/><geom name="ground" type="plane" size="200 200 0.1" friction="1.0" ${CONTACT.ground}/>
-${bodyXML(opts)}</worldbody></mujoco>`;
+${bodyXML(opts)}${opts.objects || ''}</worldbody>
+${opts.grip ? '<equality><connect name="gripL" body1="foreL" body2="box" anchor="0 0 0" active="false"/><connect name="gripR" body1="foreR" body2="box" anchor="0 0 0" active="false"/></equality>' : ''}</mujoco>`;
 }
+/* Objects. A box anything can bump into (ground, body); a stand it can rest on (fixed, like the ground). */
+const BOX = { hx: 0.15, hy: 0.15, hz: 0.125, mass: 3 };   // a 30 x 30 x 25 cm box of 3 kg
+const HAND = { r: 0.045, at: s => [0.015, s * 0.015, -0.19] };   // the ball hand, in its forearm's frame (s: +1 left, -1 right)
+const boxXML = (x, y, z) => `<body name="box" pos="${f(x)} ${f(y)} ${f(z)}"><freejoint name="box"/><geom name="box" type="box" size="${BOX.hx} ${BOX.hy} ${BOX.hz}" mass="${BOX.mass}" friction="1.2" contype="3" conaffinity="3"/></body>`;
+const standXML = (x, y, h) => `<geom name="stand" type="box" pos="${f(x)} ${f(y)} ${f(Math.max(0.005, h) / 2)}" size="0.2 0.2 ${f(Math.max(0.005, h) / 2)}" friction="1.0" ${CONTACT.ground}/>`;
 
 /* ---------- senses (what the body reports, with nerve delays) ----------
      9  inner ear (in the head): which way is down (3), spin (3), acceleration (3), all in the head's own frame
@@ -178,6 +185,10 @@ class Body3D {
     this.ids = {}; for (const p of BODY.parts) this.ids[p.id] = id(mj.mjtObj.mjOBJ_BODY.value, p.id);
     this.joints = BODY.joints.map(j => { const k = id(mj.mjtObj.mjOBJ_JOINT.value, j.id); return { spec: j, q: this.model.jnt_qposadr[k], dq: this.model.jnt_dofadr[k], fatigue: 0 }; });
     this.nbody = this.model.nbody; this.harness = null; this.time = 0;
+    // task objects: the box (if the world has one) and the two hands' grips on it
+    this.box = id(mj.mjtObj.mjOBJ_BODY.value, 'box');
+    this.gripEq = this.box >= 0 ? { L: id(mj.mjtObj.mjOBJ_EQUALITY.value, 'gripL'), R: id(mj.mjtObj.mjOBJ_EQUALITY.value, 'gripR') } : null;
+    this.gripCmd = false; this.hold = { L: null, R: null };
     this.mus = makeMuscles3D(); this.exc = new Float64Array(NM); this.mtq = new Float64Array(NM); this.mfat = new Float64Array(NM);
     this.jq = Int32Array.from(this.joints, j => j.q); this.jdq = Int32Array.from(this.joints, j => j.dq);
     this.senseHist = Array.from({ length: HIST }, () => new Float32Array(SENSES)); this.excHist = Array.from({ length: HIST }, () => new Float64Array(NM));
@@ -195,7 +206,8 @@ class Body3D {
   views() {
     const v = this._v; if (v && v.qpos.length) return v;
     const d = this.data, m = this.model;
-    return this._v = { qpos: d.qpos, qvel: d.qvel, xpos: d.xpos, xquat: d.xquat, xmat: d.xmat, cvel: d.cvel, xfrc: d.xfrc_applied, qfrc: d.qfrc_applied, mass: m.body_mass, damping: m.dof_damping };
+    return this._v = { qpos: d.qpos, qvel: d.qvel, xpos: d.xpos, xquat: d.xquat, xmat: d.xmat, cvel: d.cvel, xfrc: d.xfrc_applied, qfrc: d.qfrc_applied, mass: m.body_mass, damping: m.dof_damping,
+      eqData: this.gripEq ? m.eq_data : null, eqActive: this.gripEq ? d.eq_active : null };
   }
   savePositions() { const p = this.views().xpos; this.prev.set(p.subarray(0, 3 * this.nbody)); }
   /** Hold the pelvis up (on) or let go: springs on its position and tilt, with MuJoCo-applied damping (stable). */
@@ -248,7 +260,7 @@ class Body3D {
   }
   /** actions[0..61]: muscle excitations (negative = off). override: { jointId: angle } steered by that joint's two muscles. */
   act(actions, override, servo = SERVO) {
-    this.limp = false;
+    this.limp = false; this.gripCmd = !!(actions && actions.length > NM && actions[NM] > 0);   // the last output closes the hands
     for (let m = 0; m < NM; m++) this.exc[m] = clamp01(actions ? actions[m] : 0);
     if (override) { const V = this.views(); this.joints.forEach((j, i) => {
       const t = override[j.spec.id]; if (t === undefined) return;
@@ -257,7 +269,40 @@ class Body3D {
     }); }
   }
   /** Brain off: every muscle relaxes and the reflexes are off too (limp, like someone unconscious). */
-  relax() { this.exc.fill(0); this.limp = true; }
+  relax() { this.exc.fill(0); this.limp = true; this.gripCmd = false; }
+  /** A hand's centre in the world (side 'L' or 'R'). */
+  handPos(side) { const a = HAND.at(side === 'L' ? 1 : -1); return this.worldPoint('fore' + side, a[0], a[1], a[2]); }
+  /** How far a world point is from the box's surface (negative = inside), and the point in the box's own frame. */
+  boxDist(p) {
+    const V = this.views(), b = this.box, m = V.xmat, k = 9 * b, d = [p[0] - V.xpos[3 * b], p[1] - V.xpos[3 * b + 1], p[2] - V.xpos[3 * b + 2]];
+    const l = [m[k] * d[0] + m[k + 3] * d[1] + m[k + 6] * d[2], m[k + 1] * d[0] + m[k + 4] * d[1] + m[k + 7] * d[2], m[k + 2] * d[0] + m[k + 5] * d[1] + m[k + 8] * d[2]];
+    const h = [BOX.hx, BOX.hy, BOX.hz], q = l.map((v, i) => Math.max(Math.abs(v) - h[i], 0));
+    const out = Math.hypot(...q), inside = Math.min(...l.map((v, i) => h[i] - Math.abs(v)));
+    return { dist: out > 0 ? out : -inside, local: l };
+  }
+  /** Which hands hold the box (0, 1 or 2). */
+  holding() { return (this.hold.L ? 1 : 0) + (this.hold.R ? 1 : 0); }
+  /** Close or open the hands: a closing hand that touches the box holds it where it touches (no yank); opening lets go. */
+  updateGrip() {
+    if (!this.gripEq) return;
+    for (const sd of ['L', 'R']) {
+      if (!this.gripCmd) { this.hold[sd] = null; continue; }
+      if (this.hold[sd]) continue;
+      const hp = this.handPos(sd), bd = this.boxDist(hp);
+      if (bd.dist <= HAND.r + 0.015) this.hold[sd] = HAND.at(sd === 'L' ? 1 : -1).concat(bd.local);
+    }
+  }
+  /** Writes this body's grips into the (shared) model before each physics sub-step. */
+  applyGrip() {
+    const V = this.views(), ed = V.eqData, ea = V.eqActive, n = ed.length / this.model.neq;
+    for (const sd of ['L', 'R']) {
+      const e = this.gripEq[sd], h = this.hold[sd];
+      if (h) for (let k = 0; k < 6; k++) ed[e * n + k] = h[k];
+      ea[e] = h ? 1 : 0;
+    }
+  }
+  /** Where the box is and how it's turned (or null). */
+  boxPose() { if (this.box < 0) return null; const V = this.views(), b = this.box; return { pos: [V.xpos[3 * b], V.xpos[3 * b + 1], V.xpos[3 * b + 2]], quat: [V.xquat[4 * b], V.xquat[4 * b + 1], V.xquat[4 * b + 2], V.xquat[4 * b + 3]] }; }
   /** A shove (impulse, N·s, world x/y/z) to a part, spread over the next brain step. */
   shove(partId, ix, iy, iz = 0) { const b = this.ids[partId], P = this.pending; P[3 * b] += ix / DT; P[3 * b + 1] += iy / DT; P[3 * b + 2] += iz / DT; }
   /** A steady pull (N, world x/y/z) on a part for the next brain step (Test mode: dragging with the mouse). */
@@ -276,6 +321,7 @@ class Body3D {
     for (let q = 0; q < NM; q++) drive[q] = this.excHist[(this.frame - MOTOR_DELAY[q] + HIST) % HIST][q];
     if (!this.limp) for (let q = 0; q < NM; q++) drive[q] = clamp01(drive[q] + REFLEX.gain * Math.max(0, this.mus[q].vn - REFLEX.threshold) * (1 - drive[q ^ 1]));
     this.frame++;
+    this.updateGrip();
     for (let n = 0; n < SUB; n++) {
       for (let i = 0; i < NJ; i++) {
         const q = qpos[this.jq[i]];
@@ -297,6 +343,7 @@ class Body3D {
         xf[6 * pel] += 40000 * (hh.x - qpos[0]); xf[6 * pel + 1] += 40000 * (hh.y - qpos[1]); xf[6 * pel + 2] += 40000 * (hh.z - qpos[2]);
         xf[6 * pel + 3] += -8000 * w * qpos[4]; xf[6 * pel + 4] += -8000 * w * qpos[5]; xf[6 * pel + 5] += -8000 * w * qpos[6];
       }
+      if (this.gripEq) this.applyGrip();
       this.mj.mj_step(this.model, this.data);
     }
     P.fill(0);
@@ -347,6 +394,42 @@ const TASKS = {
     describe(st, b) { return b.fallen ? `fell after ${st.alive.toFixed(1)} s` : `standing · drifted ${(st.drift * 100).toFixed(0)} cm`; },
     success(st, b) { return !b.fallen; },
   },
+  /* Pick up the box and carry it to a spot 2.5 m ahead. It starts on a stand at about waist height; the stand gets
+     lower with the difficulty until the box sits on the floor (bend down and lift it). It sees where the box is (and,
+     once it holds it, where to take it). Grip: the brain's last output closes both hands; a hand touching the box holds it. */
+  carry: {
+    name: 'Pick up and carry', seconds: 12, energy: 16000, carryTo: 2.5,
+    layout(trial) { const h = 0.72 * (1 - trial.hard); return { x: 0.5, y: 0, h: h < 0.03 ? 0 : h }; },
+    world(trial) { const L = this.layout(trial); return { objects: (L.h ? standXML(L.x, L.y, L.h) : '') + boxXML(L.x, L.y, L.h + BOX.hz + 0.002), grip: true }; },
+    setup(body, trial) {
+      const L = this.layout(trial), p = body.boxPose().pos;
+      return { x0: p[0], z0: p[2], tx: L.x + this.carryTo, ty: L.y, near: 9, lift: 0, held: 0, carried: 0, alive: 0, dropped: false };
+    },
+    // seen: the box (forward, sideways, up from the hips, in the direction the body faces); holding it: the spot to take it to
+    senseTask(st, b) {
+      const p = b.pose('pelvis').pos, [c, s] = b.heading(), box = b.boxPose().pos, hold = b.holding();
+      const t = hold ? [st.tx, st.ty, 0.9] : box, dx = t[0] - p[0], dy = t[1] - p[1];
+      return { fwd: Math.max(-3, Math.min(3, dx * c + dy * s)), side: Math.max(-3, Math.min(3, -dx * s + dy * c)), up: t[2] - p[2], a: hold / 2 };
+    },
+    step(st, b) {
+      st.alive += DT;
+      const box = b.boxPose().pos, hold = b.holding();
+      st.near = Math.min(st.near, Math.min(b.boxDist(b.handPos('L')).dist, b.boxDist(b.handPos('R')).dist) - HAND.r);
+      if (hold) { st.held += DT; st.lift = Math.max(st.lift, box[2] - st.z0); st.carried = Math.max(st.carried, Math.min(this.carryTo, box[0] - st.x0)); }
+      if (st.held > 0.5 && !hold && box[2] < st.z0 - 0.05) st.dropped = true;
+    },
+    progress(st) { return { reach: Math.exp(-10 * Math.max(0, st.near) ** 2), lift: Math.min(1, st.lift / 0.3), carry: st.carried / this.carryTo }; },
+    score(st, b) {
+      const g = this.progress(st);
+      return 0.1 * st.alive + g.reach + Math.min(1, st.held) + 2 * g.lift + 4 * g.carry + (this.success(st, b) ? 2 : 0) - (b.fallen ? 2 : 0) - (st.dropped ? 1 : 0) + energyBonus(b);
+    },
+    describe(st, b) {
+      if (b.fallen) return `fell after ${st.alive.toFixed(1)} s`;
+      if (!st.held) return `reaching for the box · ${Math.max(0, st.near * 100).toFixed(0)} cm away`;
+      return `${b.holding() ? `holding the box with ${b.holding() === 2 ? 'both hands' : 'one hand'}` : st.dropped ? 'dropped the box' : 'let go of the box'} · lifted ${(st.lift * 100).toFixed(0)} cm · carried ${(st.carried).toFixed(1)} of ${this.carryTo} m`;
+    },
+    success(st, b) { return !b.fallen && b.holding() > 0 && st.carried >= this.carryTo - 0.3 && b.boxPose().pos[2] > 0.4; },
+  },
 };
 
 /* ---------- an attempt: brains practising a task, each body in its own copy of one world ---------- */
@@ -361,7 +444,7 @@ class Trial3D {
     this.rng = Brain.makeRng(opts.seed || 1); this.input = new Float32Array(SENSES);
     const push = (this.rng() * 2 - 1) * 0.3 * (opts.push === undefined ? this.hard : opts.push), pushDir = this.rng() * Math.PI * 2;
     this.energy = opts.energy || this.task.energy * (1 + 4 * (1 - this.hard));
-    this.model = mj.MjModel.from_xml_string(worldXML());
+    this.model = mj.MjModel.from_xml_string(worldXML(this.task.world ? this.task.world(this) : {}));
     this.agents = brains.map(params => {
       const body = new Body3D(mj, { model: this.model, energy: this.energy }); body.assist = this.assist;
       body.intent = taskId === 'stand' ? null : taskId;
@@ -415,7 +498,7 @@ function combineRanks(perEpisode) {
   return Array.from({ length: n }, (_, i) => { const v = ranked.map(r => r[i]), m = v.reduce((s, x) => s + x, 0) / v.length; return m - 0.25 * (Math.max(...v) - Math.min(...v)); });
 }
 
-const api = { DT, SUB, BODY, MUSCLES3D, NJ, NM, SERVO, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTORS, MOTOR_DELAY, REFLEX, SIZES, OUTPUT_GROUPS, INTENTS,
+const api = { DT, SUB, BODY, BOX, HAND, MUSCLES3D, NJ, NM, SERVO, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTORS, MOTOR_DELAY, REFLEX, SIZES, OUTPUT_GROUPS, INTENTS,
   TASKS, worldXML, Body3D, Trial3D, freshBrain, hardness, assistFor, nextStage, episodeConfigs, combineRanks };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body3D = api;

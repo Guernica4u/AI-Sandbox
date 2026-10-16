@@ -37,7 +37,6 @@ env.load().then(async ({ mj, Brain }) => {
   let assist = process.env.GB_ASSIST !== undefined ? +process.env.GB_ASSIST : undefined;
   // a skill named after a human example (walk, walk2, run, jump) means: copy that example (mocap/clips.js)
   const clip = ['walk', 'walk2', 'run', 'jump'].includes(skill) ? skill : undefined;
-  if (clip && assist === undefined) assist = 0;
 
   const n = Math.max(1, Math.min(+coresArg || os.cpus().length - 1, 48));
   const workers = await Promise.all(Array.from({ length: n }, (_, k) => new Promise(res => {

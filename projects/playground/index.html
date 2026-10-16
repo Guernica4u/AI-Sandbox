@@ -62,7 +62,7 @@
 </header>
 <div class="bar">
   <div class="tabs" id="modeTabs"><button data-mode="watch">Watch</button><button data-mode="train">Train</button><button data-mode="test">Test</button></div>
-  <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label><span class="label">Practice</span><select id="example"><option value="">Stand (shoves)</option></select><label class="check" id="showPersonWrap" hidden><input type="checkbox" id="showPerson" checked> Show the person</label></div>
+  <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label><span class="label">Practice</span><select id="example"><option value="">Stand (shoves)</option><option value="task:carry">Pick up and carry</option></select><label class="check" id="showPersonWrap" hidden><input type="checkbox" id="showPerson" checked> Show the person</label></div>
   <div class="controls" id="trainCtl" hidden><button class="go" id="trainBtn">Start training</button><span class="label" id="trainInfo"></span></div>
   <div class="controls" id="testCtl" hidden><button id="brainBtn">Brain: on</button><button id="harnessBtn">Harness: on</button><button id="resetBtn">Reset body</button><button id="shove2">Shove</button><label class="check"><input type="checkbox" id="slow2"> Slow motion</label></div>
 </div>
@@ -122,7 +122,7 @@ function refreshAgents() {
   $('#agentPick').innerHTML = App.agents.map(a => `<option value="${a.id}" ${a.id === App.current ? 'selected' : ''}>${a.name.replace(/[<&"]/g, '')}${a.brain ? '' : ' (untrained)'}</option>`).join('');
 }
 const brainParams = a => a.brain ? Float32Array.from(a.brain.params) : (a.fresh || (a.fresh = freshBrain(makeRng(7 + App.agents.indexOf(a)))));
-const stageOf = a => a.brain ? a.brain.stage || 0 : 0;
+const stageOf = (a, task = View.task) => !a.brain ? 0 : a.brain.stages && a.brain.stages[task] !== undefined ? a.brain.stages[task] : task === 'stand' ? a.brain.stage || 0 : 0;
 
 /* ================= the 3D view (MuJoCo is z-up; the world group turns it so three's y is up) ================= */
 const canvas = $('#view'), renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -184,9 +184,21 @@ function poseGhost(dt) {
 const dragLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0xff6a3d }));
 dragLine.visible = false; scene.add(dragLine);
 const toMj = v => [v.x, -v.z, v.y];   // three (y up) → MuJoCo (z up)
+const { BOX } = window.Body3D;
+const boxMesh = new THREE.Mesh(new RoundedBoxGeometry(2 * BOX.hx, 2 * BOX.hy, 2 * BOX.hz, 3, 0.012), new THREE.MeshStandardMaterial({ color: 0x9c8b73, roughness: 0.85 }));
+boxMesh.castShadow = true; boxMesh.receiveShadow = true; boxMesh.visible = false; world.add(boxMesh);
+const standMesh = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 1), new THREE.MeshStandardMaterial({ color: 0x2a2f37, roughness: 0.9 }));
+standMesh.castShadow = true; standMesh.receiveShadow = true; standMesh.visible = false; world.add(standMesh);
+function drawObjects(b, tr) {
+  const bp = b.boxPose && b.boxPose();
+  boxMesh.visible = !!bp; standMesh.visible = false;
+  if (!bp) return;
+  boxMesh.position.set(...bp.pos); boxMesh.quaternion.set(bp.quat[1], bp.quat[2], bp.quat[3], bp.quat[0]);
+  const task = tr.task; if (task && task.layout) { const L = task.layout(tr); if (L.h) { standMesh.visible = true; standMesh.scale.set(1, 1, L.h); standMesh.position.set(L.x, L.y, L.h / 2); } }
+}
 
 /* ================= the attempt on screen (Watch, Test, and the replay while training) ================= */
-const View = { trial: null, endAt: 0, slow: false, copy: '' };
+const View = { trial: null, endAt: 0, slow: false, copy: '', task: 'stand' };
 class CopyTrial {   // the agent copying a recorded person (learn.js Env), its brain's best guess with no wobble
   constructor(clipId, params) {
     this.clipId = clipId; this.env = new window.Learn.Env(mj, { clip: clipId, seed: (Math.random() * 1e9) | 0, seconds: 1e9 });
@@ -211,7 +223,7 @@ function newTrial(opts) {
   if (View.trial) View.trial.free();
   const a = agent(), st = stageOf(a);
   if (View.copy && App.mode !== 'test') { View.trial = new CopyTrial(View.copy, brainParams(a)); View.endAt = 0; return; }
-  View.trial = new Trial3D(mj, 'stand', [brainParams(a)], Object.assign({ seed: (Math.random() * 1e9) | 0, hard: hardness(st), assist: assistFor(st), keepSimulating: true }, opts));
+  View.trial = new Trial3D(mj, App.mode === 'test' ? 'stand' : View.task, [brainParams(a)], Object.assign({ seed: (Math.random() * 1e9) | 0, hard: hardness(st), assist: assistFor(st), keepSimulating: true }, opts));
   View.trial.maxSteps = Infinity; View.endAt = 0;
 }
 const body = () => View.trial && View.trial.agents[0].body;
@@ -299,14 +311,14 @@ const Pool = {
 const Train = {
   running: false, token: 0, evo: null, genSecs: 0, agentId: null,
   async start() {
-    const a = agent(), b = a.brain;
-    this.agentId = a.id;
+    const a = agent(), b = a.brain, task = View.task;
+    this.agentId = a.id; this.task = task;
     this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (b ? b.generation : 0) + 1 + App.agents.indexOf(a) * 1000, sigma: b ? b.sigma || 0.15 : 0.15,
       parent: brainParams(a), outputGroups: OUTPUT_GROUPS, generation: b ? b.generation : 0, history: b ? b.history || [] : [] });
     let stage = stageOf(a);
     this.running = true; const token = ++this.token; renderUI();
     while (this.running && token === this.token) {
-      const t0 = performance.now(), eps = episodeConfigs('stand', stage, this.evo.generation).map(cfg => ({ taskId: 'stand', cfg }));
+      const t0 = performance.now(), eps = episodeConfigs(task, stage, this.evo.generation).map(cfg => ({ taskId: task, cfg }));
       const r = await Pool.run(eps, this.evo.population);
       if (!this.running || token !== this.token) return;
       const combined = combineRanks(r.scores);
@@ -314,7 +326,11 @@ const Train = {
       stage = nextStage(stage, r.successes.reduce((s, ep) => s + (ep[best] ? 1 : 0), 0) / r.successes.length);   // harder only while the best copes
       this.evo.tell(combined);
       const ag = App.agents.find(x => x.id === this.agentId);
-      if (ag) { const first = !ag.brain; ag.brain = { skill: 'stand', stage, generation: this.evo.generation, sigma: this.evo.sigma, sizes: SIZES, history: this.evo.history, params: Array.from(this.evo.best) }; save(); if (first) refreshAgents(); }
+      if (ag) {
+        const first = !ag.brain, old = ag.brain || {}, stages = Object.assign({ stand: old.stage || 0 }, old.stages, { [task]: stage });
+        ag.brain = { skill: task, stage: stages.stand, stages, generation: this.evo.generation, sigma: this.evo.sigma, sizes: SIZES, history: this.evo.history, params: Array.from(this.evo.best) };
+        save(); if (first) refreshAgents();
+      }
       this.genSecs = (performance.now() - t0) / 1000;
       document.title = document.hidden ? `Gen ${this.evo.generation} · training · Playground` : 'Playground · Glass Box';
       renderUI();
@@ -328,11 +344,11 @@ const Check = { running: false };
 async function successCheck() {
   if (Check.running) return;
   const a = agent(), st = stageOf(a); Check.running = true; renderUI();
-  const eps = Array.from({ length: 10 }, (_, k) => ({ taskId: 'stand', cfg: { seed: 77777 + k * 131, hard: hardness(st), assist: assistFor(st) } }));
+  const task = View.task, eps = Array.from({ length: 10 }, (_, k) => ({ taskId: task, cfg: { seed: 77777 + k * 131, hard: hardness(st), assist: assistFor(st) } }));
   const r = await Pool.run(eps, [brainParams(a)]);
   const ok = r.successes.filter(s => s[0]).length;
-  a.tests = { stand: { ok, n: 10, generation: a.brain ? a.brain.generation : 0, stage: st } }; save();
-  Check.running = false; renderUI(); toast(`${a.name}: stayed standing in ${ok} of 10 attempts`);
+  a.tests = Object.assign({}, a.tests, { [task]: { ok, n: 10, generation: a.brain ? a.brain.generation : 0, stage: st } }); save();
+  Check.running = false; renderUI(); toast(`${a.name}: ${task === 'carry' ? 'carried the box' : 'stayed standing'} in ${ok} of 10 attempts`);
 }
 
 /* ================= UI ================= */
@@ -354,8 +370,8 @@ function renderUI() {
   $('#stGen').textContent = a.brain ? a.brain.generation : 0;
   $('#stHard').textContent = `${Math.round(hardness(st) * 100)}%`;
   $('#stHelp').textContent = assistFor(st) > 0 ? `helping hands ${Math.round(assistFor(st) * 100)}%` : 'no help';
-  const t = a.tests && a.tests.stand;
-  $('#stOk').textContent = t ? `${t.ok}/${t.n}` : '—'; $('#stOkNote').textContent = t ? `stayed standing (gen ${t.generation})` : 'press Success check';
+  const t = a.tests && a.tests[View.task];
+  $('#stOk').textContent = t ? `${t.ok}/${t.n}` : '—'; $('#stOkNote').textContent = t ? `${View.task === 'carry' ? 'carried the box' : 'stayed standing'} (gen ${t.generation})` : 'press Success check';
   $('#note').innerHTML = View.copy && App.mode === 'watch'
     ? `<strong>Copy a person.</strong> The see-through figure is a real person, recorded in a motion-capture studio and fitted onto our body. ` +
       `The agent learns to move like them with its own muscles: nothing pulls it into place. It's scored on how closely its pose, hands and feet follow. ` +
@@ -363,6 +379,9 @@ function renderUI() {
     : App.mode === 'test'
     ? `<strong>Test.</strong> Grab any body part with the mouse and drag it. Hold a joint slider to bend that joint (its own muscles do it). ` +
       `Brain on: it reacts to what you do. Brain off: limp. Nothing here changes the brain.`
+    : View.task === 'carry' ? `<strong>Pick up and carry.</strong> A 3 kg box sits on a stand in front of the agent. Pick it up and carry it to a spot 2.5 m ahead. ` +
+      `It sees the box (and once it holds it, the spot). Closing its hands grips whatever they touch. The stand gets lower as it copes, until the box is on the floor.` +
+      (a.brain ? '' : ' <br><span style="color:var(--signal)">Untrained: this brain is random. Train it!</span>')
     : `<strong>Stand.</strong> Stay up while something shoves the chest every 2 seconds, from a different direction each time. ` +
       `At first helping hands hold the chest up, like an adult holding a baby; they fade as the agent copes. Difficulty only rises while it copes.` +
       (a.brain ? '' : ' <br><span style="color:var(--signal)">Untrained: this brain is random, so the body just collapses. Train it!</span>');
@@ -395,8 +414,12 @@ $('#importFile').onchange = async e => {
 };
 $('#restart').onclick = () => newTrial();
 $('#example').innerHTML += Object.entries(CLIPS).map(([id, c]) => `<option value="${id}">Copy a person: ${c.label.toLowerCase()}</option>`).join('');
+$('#trainBtn').title = 'Trains the practice picked in Watch (Stand, or Pick up and carry). Copying a person is trained on the computer for now.';
 $('#example').onchange = e => {
-  View.copy = e.target.value || ''; $('#showPersonWrap').hidden = !View.copy; $('#shove').hidden = !!View.copy; $('#check').hidden = !!View.copy;
+  const v = e.target.value || '';
+  if (Train.running) Train.stop();
+  View.task = v.startsWith('task:') ? v.slice(5) : 'stand'; View.copy = v && !v.startsWith('task:') ? v : '';
+  $('#showPersonWrap').hidden = !View.copy; $('#shove').hidden = !!View.copy; $('#check').hidden = !!View.copy;
   newTrial(); renderUI();
   if (View.copy) toast(`See-through: a real person (${CLIPS[View.copy].source.replace(/^CMU /, 'CMU motion library, ')}). The agent tries to move like them.`, 4000);
 };
@@ -428,6 +451,7 @@ function frame(now) {
   while (View.trial && acc >= 1 / 60 && n++ < 4) { stepOnce(now); acc -= 1 / 60; }
   poseGhost(View.slow ? dt * 0.2 : dt);
   const b = body();
+  if (b) drawObjects(b, View.trial);
   if (b) for (const p of BODY.parts) { const { pos, quat } = b.pose(p.id), g = groups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
   if (b) { const c = b.pose('chest').pos; controls.target.lerp(new THREE.Vector3(c[0], 0.9, -c[1]), 0.05); sun.position.set(c[0] + 3, 6, -c[1] + 4); sun.target.position.set(c[0], 0, -c[1]); }
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -438,7 +462,7 @@ function frame(now) {
     const a = agent(), tr = View.trial, mode = App.mode;
     $('#statusText').textContent = mode === 'test'
       ? `TEST · ${a.name} · ${Test.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'}${Test.harness ? ' · in the harness' : ''} · drag any part`
-      : `${mode === 'train' && Train.running ? 'TRAINING · replaying the best so far · ' : ''}${a.name} · ${tr.time.toFixed(1)} s · ${tr instanceof CopyTrial ? tr.describe() : TASKS.stand.describe(tr.agents[0].st, b)}`;
+      : `${mode === 'train' && Train.running ? 'TRAINING · replaying the best so far · ' : ''}${a.name} · ${tr.time.toFixed(1)} s · ${tr instanceof CopyTrial ? tr.describe() : TASKS[tr.taskId].describe(tr.agents[0].st, b)}`;
     $('#stEnergy').textContent = mode === 'test' ? `${Math.round(b.power)} W` : `${Math.round(100 * b.energyLeft / b.energyMax)}% · ${Math.round(b.power)} W`;
     $('#stTired').textContent = `tired: legs ${Math.round(b.tiredness('legs') * 100)}% · arms ${Math.round(b.tiredness('arms') * 100)}%`;
     if (mode === 'test') for (const j of BODY.joints) { const el = document.getElementById('jv-' + j.id); if (el) el.textContent = `${Math.round(b.angle(j.id) * 57.3)}°`; }
