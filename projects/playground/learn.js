@@ -214,8 +214,11 @@ class Env {
       const k = 3 * b.ids[part]; for (let a = 0; a < 3; a++) de += ((xp[k + a] - xp[pel + a]) - (rx[k + a] - rx[pel + a])) ** 2;
     }
     const dc = (V.qpos[0] - q[0]) ** 2 + (V.qpos[1] - q[1]) ** 2 + (V.qpos[2] - q[2]) ** 2;
-    const r = 0.5 * Math.exp(-2 * dp) + 0.05 * Math.exp(-0.1 * dv) + 0.15 * Math.exp(-40 * de) + 0.2 * Math.exp(-10 * dc) + 0.1 * Math.exp(-Math.max(0, b.power - 150) / 600);
-    return { r, off: Math.sqrt(dc), headLow: xp[3 * b.ids.head + 2] < rx[3 * b.ids.head + 2] - 0.35, pose: Math.exp(-2 * dp) };
+    // DeepMimic's scales are for ~12 ball joints; ours has 31 hinges and 5 tracked parts, so the same strictness made every
+    // pose score 0 (no hint which way is better). These keep "closer to the person" always worth a bit more.
+    const pose = Math.exp(-0.4 * dp), vel = Math.exp(-0.005 * dv), ends = Math.exp(-5 * de), hips = Math.exp(-10 * dc);
+    const r = 0.5 * pose + 0.05 * vel + 0.15 * ends + 0.2 * hips + 0.1 * Math.exp(-Math.max(0, b.power - 150) / 600);
+    return { r, off: Math.sqrt(dc), headLow: xp[3 * b.ids.head + 2] < rx[3 * b.ids.head + 2] - 0.35, pose, vel, ends, hips };
   }
   /** One brain step. Returns { r, done (fell), trunc (time up) }; observe() is then the next moment's senses. */
   step(action) {
