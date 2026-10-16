@@ -62,7 +62,7 @@
 </header>
 <div class="bar">
   <div class="tabs" id="modeTabs"><button data-mode="watch">Watch</button><button data-mode="train">Train</button><button data-mode="test">Test</button></div>
-  <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label><span class="label">Human example</span><select id="example"><option value="">none</option></select></div>
+  <div class="controls" id="watchCtl"><button id="restart">Restart</button><button id="check">Success check</button><button id="shove">Shove</button><label class="check"><input type="checkbox" id="slow"> Slow motion</label><span class="label">Practice</span><select id="example"><option value="">Stand (shoves)</option></select><label class="check" id="showPersonWrap" hidden><input type="checkbox" id="showPerson" checked> Show the person</label></div>
   <div class="controls" id="trainCtl" hidden><button class="go" id="trainBtn">Start training</button><span class="label" id="trainInfo"></span></div>
   <div class="controls" id="testCtl" hidden><button id="brainBtn">Brain: on</button><button id="harnessBtn">Harness: on</button><button id="resetBtn">Reset body</button><button id="shove2">Shove</button><label class="check"><input type="checkbox" id="slow2"> Slow motion</label></div>
 </div>
@@ -86,6 +86,7 @@
 <script src="../embodied-2d/muscle.js"></script>
 <script src="body3d.js"></script>
 <script src="mocap/clips.js"></script>
+<script src="learn.js"></script>
 <script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }</script>
 <script type="module">
 import * as THREE from 'three';
@@ -163,6 +164,14 @@ const Ghost = { clip: null, t: 0, body: new window.Body3D.Body3D(mj) };
 const setGhostVisible = v => { for (const g of Object.values(ghostGroups)) g.visible = v; };
 setGhostVisible(false);
 function poseGhost(dt) {
+  const tr = View.trial, copying = tr instanceof CopyTrial && App.mode !== 'test';
+  setGhostVisible(copying && $('#showPerson').checked);
+  if (copying) {   // exactly where the agent should be right now
+    const V = Ghost.body.views(); V.qpos.set(tr.env.ref.pose(tr.env.refT));
+    mj.mj_kinematics(Ghost.body.model, Ghost.body.data);
+    for (const p of BODY.parts) { const { pos, quat } = Ghost.body.pose(p.id), g = ghostGroups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
+    return;
+  }
   const c = Ghost.clip; if (!c) return;
   Ghost.t = (Ghost.t + dt) % (c.qpos.length / c.fps);
   const f = Ghost.t * c.fps, i = Math.floor(f), w = f - i, a = c.qpos[i], b = c.qpos[Math.min(i + 1, c.qpos.length - 1)], V = Ghost.body.views();
@@ -177,10 +186,31 @@ dragLine.visible = false; scene.add(dragLine);
 const toMj = v => [v.x, -v.z, v.y];   // three (y up) → MuJoCo (z up)
 
 /* ================= the attempt on screen (Watch, Test, and the replay while training) ================= */
-const View = { trial: null, endAt: 0, slow: false };
+const View = { trial: null, endAt: 0, slow: false, copy: '' };
+class CopyTrial {   // the agent copying a recorded person (learn.js Env), its brain's best guess with no wobble
+  constructor(clipId, params) {
+    this.clipId = clipId; this.env = new window.Learn.Env(mj, { clip: clipId, seed: (Math.random() * 1e9) | 0, seconds: 1e9 });
+    this.net = new window.Brain.Network(SIZES, params); this.time = 0; this.match = 1; this.followed = 0;
+    this.agents = [{ body: this.env.body, st: {}, done: false }];
+  }
+  step() {
+    const ag = this.agents[0];
+    if (ag.done) { ag.body.relax(); ag.body.step(); this.time += window.Body3D.DT; return; }
+    const r = this.env.step(this.net.forward(this.env.obs));
+    this.time += window.Body3D.DT; this.match += ((this.env.lastMatch || 0) - this.match) * 0.1;
+    if (r.done || r.trunc) { ag.done = true; ag.finished = r.trunc; } else this.followed = this.time;
+  }
+  describe() {
+    const c = CLIPS[this.clipId], ag = this.agents[0];
+    return ag.done ? (ag.finished ? `copied the whole ${c.label.toLowerCase()}` : `lost the person after ${this.followed.toFixed(1)} s`)
+      : `copying a person: ${c.label.toLowerCase()} · following for ${this.followed.toFixed(1)} s · pose match ${Math.round(this.match * 100)}%`;
+  }
+  free() { this.env.free(); }
+}
 function newTrial(opts) {
   if (View.trial) View.trial.free();
   const a = agent(), st = stageOf(a);
+  if (View.copy && App.mode !== 'test') { View.trial = new CopyTrial(View.copy, brainParams(a)); View.endAt = 0; return; }
   View.trial = new Trial3D(mj, 'stand', [brainParams(a)], Object.assign({ seed: (Math.random() * 1e9) | 0, hard: hardness(st), assist: assistFor(st), keepSimulating: true }, opts));
   View.trial.maxSteps = Infinity; View.endAt = 0;
 }
@@ -326,7 +356,11 @@ function renderUI() {
   $('#stHelp').textContent = assistFor(st) > 0 ? `helping hands ${Math.round(assistFor(st) * 100)}%` : 'no help';
   const t = a.tests && a.tests.stand;
   $('#stOk').textContent = t ? `${t.ok}/${t.n}` : '—'; $('#stOkNote').textContent = t ? `stayed standing (gen ${t.generation})` : 'press Success check';
-  $('#note').innerHTML = App.mode === 'test'
+  $('#note').innerHTML = View.copy && App.mode === 'watch'
+    ? `<strong>Copy a person.</strong> The see-through figure is a real person, recorded in a motion-capture studio and fitted onto our body. ` +
+      `The agent learns to move like them with its own muscles: nothing pulls it into place. It's scored on how closely its pose, hands and feet follow. ` +
+      `This is trained with the new learning method (on the computer, for now).`
+    : App.mode === 'test'
     ? `<strong>Test.</strong> Grab any body part with the mouse and drag it. Hold a joint slider to bend that joint (its own muscles do it). ` +
       `Brain on: it reacts to what you do. Brain off: limp. Nothing here changes the brain.`
     : `<strong>Stand.</strong> Stay up while something shoves the chest every 2 seconds, from a different direction each time. ` +
@@ -360,8 +394,12 @@ $('#importFile').onchange = async e => {
   } catch (err) { toast('Could not import: ' + err.message, 4000); }
 };
 $('#restart').onclick = () => newTrial();
-$('#example').innerHTML += Object.entries(CLIPS).map(([id, c]) => `<option value="${id}">${c.label}</option>`).join('');
-$('#example').onchange = e => { Ghost.clip = CLIPS[e.target.value] || null; Ghost.t = 0; setGhostVisible(!!Ghost.clip); if (Ghost.clip) toast(`A real person (${Ghost.clip.source.replace(/^CMU /, 'CMU motion library, ')}), fitted onto our body`); };
+$('#example').innerHTML += Object.entries(CLIPS).map(([id, c]) => `<option value="${id}">Copy a person: ${c.label.toLowerCase()}</option>`).join('');
+$('#example').onchange = e => {
+  View.copy = e.target.value || ''; $('#showPersonWrap').hidden = !View.copy; $('#shove').hidden = !!View.copy; $('#check').hidden = !!View.copy;
+  newTrial(); renderUI();
+  if (View.copy) toast(`See-through: a real person (${CLIPS[View.copy].source.replace(/^CMU /, 'CMU motion library, ')}). The agent tries to move like them.`, 4000);
+};
 $('#check').onclick = successCheck;
 const shove = () => { const a = Math.random() * Math.PI * 2; body() && body().shove('chest', Math.cos(a) * 40, Math.sin(a) * 40); };
 $('#shove').onclick = shove; $('#shove2').onclick = shove;
@@ -400,7 +438,7 @@ function frame(now) {
     const a = agent(), tr = View.trial, mode = App.mode;
     $('#statusText').textContent = mode === 'test'
       ? `TEST · ${a.name} · ${Test.brainOn ? 'brain on: it reacts to you' : 'brain off: limp'}${Test.harness ? ' · in the harness' : ''} · drag any part`
-      : `${mode === 'train' && Train.running ? 'TRAINING · replaying the best so far · ' : ''}${a.name} · ${tr.time.toFixed(1)} s · ${TASKS.stand.describe(tr.agents[0].st, b)}`;
+      : `${mode === 'train' && Train.running ? 'TRAINING · replaying the best so far · ' : ''}${a.name} · ${tr.time.toFixed(1)} s · ${tr instanceof CopyTrial ? tr.describe() : TASKS.stand.describe(tr.agents[0].st, b)}`;
     $('#stEnergy').textContent = mode === 'test' ? `${Math.round(b.power)} W` : `${Math.round(100 * b.energyLeft / b.energyMax)}% · ${Math.round(b.power)} W`;
     $('#stTired').textContent = `tired: legs ${Math.round(b.tiredness('legs') * 100)}% · arms ${Math.round(b.tiredness('arms') * 100)}%`;
     if (mode === 'test') for (const j of BODY.joints) { const el = document.getElementById('jv-' + j.id); if (el) el.textContent = `${Math.round(b.angle(j.id) * 57.3)}°`; }
