@@ -17,6 +17,7 @@
 function __body3dModule(root) {
 'use strict';
 const Muscle = root.Muscle || (typeof require === 'function' ? require('../embodied-2d/muscle.js') : null);
+const Brain = root.Brain || (typeof require === 'function' ? require('../embodied-2d/brain.js') : null);
 
 const DT = 1 / 60, SUB = 6, H = DT / SUB;   // brain step; physics sub-steps (360 Hz), as in Embodied 2D
 const SIDES = [['L', 1], ['R', -1]];         // left is +y
@@ -133,17 +134,60 @@ function worldXML(opts = {}) {
 ${bodyXML(opts)}</worldbody></mujoco>`;
 }
 
-/* ---------- one body in its own world ---------- */
+/* ---------- senses (what the body reports, with nerve delays) ----------
+     9  inner ear (in the head): which way is down (3), spin (3), acceleration (3), all in the head's own frame
+     3  seeing yourself move: the head's velocity (forward, sideways, up), in the direction the body faces
+    31  joint position (joint receptors)
+    62  muscle stretch sensors (spindles): how fast each muscle is being stretched (+) or shortening (-)
+    62  tendon force sensors: how hard each muscle pulls
+     6  touch under each heel, ball and toe tip (L heel, ball, toes, R heel, ball, toes)
+     2  a 1 Hz rhythm (sin, cos)
+     4  task inputs, seen (target forward, sideways, up; extra)
+     3  energy left, leg tiredness, arm tiredness (felt)
+     3  what it's trying to do (none of them: just stand)
+   Nerve delays (brain steps of 17 ms): inner ear 1, sight 6, legs 2, trunk and arms 1, touch 2, inner feelings 3.  */
+const INTENTS = ['walk', 'jump', 'grab'];
+const SENSE_LIST = [['ear', 9], ['sight', 3], ['joints', NJ], ['spindles', NM], ['tendons', NM], ['touch', 6], ['clock', 2], ['task', 4], ['inner', 3], ['intent', INTENTS.length]];
+const SENSE_AT = (() => { let i = 0; const at = {}; for (const [k, n] of SENSE_LIST) { at[k] = i; i += n; } at.total = i; return at; })();
+const SENSES = SENSE_AT.total;   // 185
+const DELAY = { ear: 1, sight: 6, legs: 2, trunk: 1, arms: 1, touch: 2, clock: 0, task: 6, inner: 3, intent: 0 };
+const SENSE_DELAY = (() => {
+  const d = new Int8Array(SENSES), jd = j => DELAY[BODY.joints[j].group];
+  const fill = (k, f) => { for (let i = 0; i < SENSE_LIST.find(e => e[0] === k)[1]; i++) d[SENSE_AT[k] + i] = f(i); };
+  fill('ear', () => DELAY.ear); fill('sight', () => DELAY.sight); fill('joints', jd); fill('spindles', m => jd(m >> 1)); fill('tendons', m => jd(m >> 1));
+  fill('touch', () => DELAY.touch); fill('clock', () => DELAY.clock); fill('task', () => DELAY.task); fill('inner', () => DELAY.inner); fill('intent', () => DELAY.intent);
+  return d;
+})();
+const MOTORS = NM + 1;   // 62 muscles + grip
+const MOTOR_DELAY = Int8Array.from({ length: MOTORS }, (_, m) => m < NM ? DELAY[BODY.joints[m >> 1].group] : DELAY.arms);
+const HIST = 8;
+const REFLEX = { gain: 0.8, threshold: 0.02 };   // stretch reflex, switched down while the opposite muscle is driven
+const SIZES = [SENSES, 64, MOTORS];
+const muscleGroup = g => BODY.joints.flatMap((j, i) => j.group === g ? [2 * i, 2 * i + 1] : []);
+const OUTPUT_GROUPS = [muscleGroup('legs'), muscleGroup('trunk'), muscleGroup('arms').concat(NM)];
+// energy and fatigue, as in Embodied 2D
+const BASAL_W = 70, MAINT = 1.2, WORK_COST = 4, TIRE = 0.08, RECOVER = 0.05;
+
+/* ---------- one body ---------- */
 class Body3D {
+  /** opts.model: a compiled world to share (one per attempt); otherwise the body gets its own. */
   constructor(mj, opts = {}) {
-    this.mj = mj; this.model = mj.MjModel.from_xml_string(worldXML(opts)); this.data = new mj.MjData(this.model);
+    this.mj = mj; this.ownModel = !opts.model;
+    this.model = opts.model || mj.MjModel.from_xml_string(worldXML(opts)); this.data = new mj.MjData(this.model);
     const id = (t, n) => mj.mj_name2id(this.model, t, n);
     this.ids = {}; for (const p of BODY.parts) this.ids[p.id] = id(mj.mjtObj.mjOBJ_BODY.value, p.id);
-    this.joints = BODY.joints.map(j => { const k = id(mj.mjtObj.mjOBJ_JOINT.value, j.id); return Object.assign({ spec: j }, { q: this.model.jnt_qposadr[k], dq: this.model.jnt_dofadr[k] }); });
+    this.joints = BODY.joints.map(j => { const k = id(mj.mjtObj.mjOBJ_JOINT.value, j.id); return { spec: j, q: this.model.jnt_qposadr[k], dq: this.model.jnt_dofadr[k], fatigue: 0 }; });
     this.nbody = this.model.nbody; this.harness = null; this.time = 0;
-    this.mus = makeMuscles3D(); this.exc = new Float64Array(NM); this.mtq = new Float64Array(NM);
+    this.mus = makeMuscles3D(); this.exc = new Float64Array(NM); this.mtq = new Float64Array(NM); this.mfat = new Float64Array(NM);
     this.jq = Int32Array.from(this.joints, j => j.q); this.jdq = Int32Array.from(this.joints, j => j.dq);
+    this.senseHist = Array.from({ length: HIST }, () => new Float32Array(SENSES)); this.excHist = Array.from({ length: HIST }, () => new Float64Array(NM));
+    this.frame = 0; this.histFilled = false; this.prevHeadVel = null; this.limp = false; this.fallen = false;
+    this.drive = new Float64Array(NM); this.pending = new Float64Array(3 * this.nbody);
+    this.energyMax = opts.energy || 14000; this.energyLeft = this.energyMax; this.used = 0; this.power = 0;
+    this.hipsLow = opts.hipsLow || 0.78; this.intent = null;
+    this.vel = new Float64Array(3 * this.nbody); this.prev = new Float64Array(3 * this.nbody);
     mj.mj_forward(this.model, this.data);
+    this.savePositions();
     // start already standing: muscles settle at a light resting tone before time starts
     for (let k = 0; k < 400; k++) for (let m = 0; m < NM; m++) this.mus[m].step(0.1, this.data.qpos[this.jq[m >> 1]], 1 / 400);
   }
@@ -151,12 +195,60 @@ class Body3D {
   views() {
     const v = this._v; if (v && v.qpos.length) return v;
     const d = this.data, m = this.model;
-    return this._v = { qpos: d.qpos, qvel: d.qvel, xpos: d.xpos, xquat: d.xquat, xfrc: d.xfrc_applied, qfrc: d.qfrc_applied, mass: m.body_mass, damping: m.dof_damping };
+    return this._v = { qpos: d.qpos, qvel: d.qvel, xpos: d.xpos, xquat: d.xquat, xmat: d.xmat, cvel: d.cvel, xfrc: d.xfrc_applied, qfrc: d.qfrc_applied, mass: m.body_mass, damping: m.dof_damping };
   }
+  savePositions() { const p = this.views().xpos; this.prev.set(p.subarray(0, 3 * this.nbody)); }
   /** Hold the pelvis up (on) or let go: springs on its position and tilt, with MuJoCo-applied damping (stable). */
-  setHarness(on) { const V = this.views(); this.harness = on ? { x: V.qpos[0], y: V.qpos[1], z: 1.01 } : null; const d = V.damping; for (let k = 0; k < 6; k++) d[k] = on ? (k < 3 ? 3000 : 200) : 0; }
+  setHarness(on) { const V = this.views(); this.harness = on ? { x: V.qpos[0], y: V.qpos[1], z: 1.01 } : null; const d = V.damping; for (let k = 0; k < 6; k++) d[k] = on ? (k < 3 ? 3000 : 200) : 0; if (on) this.fallen = false; }
+  /** A world point of a part from a point in its own frame. */
+  worldPoint(partId, lx, ly, lz) {
+    const V = this.views(), b = this.ids[partId], m = V.xmat, p = V.xpos, k = 9 * b;
+    return [p[3 * b] + m[k] * lx + m[k + 1] * ly + m[k + 2] * lz, p[3 * b + 1] + m[k + 3] * lx + m[k + 4] * ly + m[k + 5] * lz, p[3 * b + 2] + m[k + 6] * lx + m[k + 7] * ly + m[k + 8] * lz];
+  }
+  /** Height above the ground of the heel (-1) or ball (+1) of a foot, or the toe tip ('toes', +1). */
+  soleHeight(side, part, end) { const pz = part === 'toes' ? [0.0275, 0.02] : [0.0825, 0.03]; return this.worldPoint(part + side, end * pz[0], 0, -pz[1])[2]; }
+  soleClear(side) { return Math.min(this.soleHeight(side, 'foot', -1), this.soleHeight(side, 'foot', 1), this.soleHeight(side, 'toes', 1)); }
+  /** How far the body leans from upright: the angle between vertical and the line from the pelvis to the head. */
+  lean() { const V = this.views(), p = 3 * this.ids.pelvis, h = 3 * this.ids.head, dx = V.xpos[h] - V.xpos[p], dy = V.xpos[h + 1] - V.xpos[p + 1], dz = V.xpos[h + 2] - V.xpos[p + 2]; return Math.atan2(Math.hypot(dx, dy), dz); }
+  /** The direction the body faces on the ground (the pelvis's forward axis, flattened): [cos, sin] of its heading. */
+  heading() { const m = this.views().xmat, k = 9 * this.ids.pelvis, fx = m[k], fy = m[k + 3], n = Math.hypot(fx, fy) || 1; return [fx / n, fy / n]; }
+  tiredness(group) { let s = 0, n = 0; this.joints.forEach(j => { if (group === 'legs' ? j.spec.group === 'legs' : j.spec.group === 'arms') { s += j.fatigue; n++; } }); return s / n; }
+
+  /** What the body reports right now (see SENSES), before any nerve delay. task = { fwd, side, up, a }. */
+  senseNow(out, time, task) {
+    const V = this.views(), h = this.ids.head, m = V.xmat, k = 9 * h, cv = V.cvel;
+    const toHead = (x, y, z) => [m[k] * x + m[k + 3] * y + m[k + 6] * z, m[k + 1] * x + m[k + 4] * y + m[k + 7] * z, m[k + 2] * x + m[k + 5] * y + m[k + 8] * z];   // world -> head frame
+    const hv = [this.vel[3 * h], this.vel[3 * h + 1], this.vel[3 * h + 2]];
+    const acc = this.prevHeadVel ? hv.map((v, i) => (v - this.prevHeadVel[i]) / DT) : [0, 0, 0];
+    this.prevHeadVel = hv;
+    let i = 0;
+    for (const v of toHead(0, 0, -1)) out[i++] = v;                                          // which way is down
+    for (const v of toHead(cv[6 * h], cv[6 * h + 1], cv[6 * h + 2])) out[i++] = v * 0.25;    // spin
+    for (const v of toHead(acc[0], acc[1], acc[2] + 9.81)) out[i++] = Math.max(-1, Math.min(1, v * 0.05));   // what the balance organs feel: gravity plus acceleration
+    const [c, s] = this.heading();
+    out[i++] = (hv[0] * c + hv[1] * s) * 0.3; out[i++] = (-hv[0] * s + hv[1] * c) * 0.3; out[i++] = hv[2] * 0.3;   // seeing yourself move
+    for (const j of this.joints) { const r = j.spec.range; out[i++] = ((V.qpos[j.q] - r[0]) / (r[1] - r[0])) * 2 - 1; }
+    for (let q = 0; q < NM; q++) out[i++] = this.mus[q].vn;
+    for (let q = 0; q < NM; q++) out[i++] = Math.min(1.5, this.mus[q].force / this.mus[q].F0);
+    const press = z => Math.max(0, 1 - z / 0.015);
+    for (const sd of ['L', 'R']) { out[i++] = press(this.soleHeight(sd, 'foot', -1)); out[i++] = press(this.soleHeight(sd, 'foot', 1)); out[i++] = press(this.soleHeight(sd, 'toes', 1)); }
+    out[i++] = Math.sin(time * Math.PI * 2); out[i++] = Math.cos(time * Math.PI * 2);
+    out[i++] = task ? task.fwd : 0; out[i++] = task ? task.side : 0; out[i++] = task ? task.up : 0; out[i++] = task ? task.a : 0;
+    out[i++] = this.energyLeft / this.energyMax; out[i++] = this.tiredness('legs'); out[i++] = this.tiredness('arms');
+    for (const kk of INTENTS) out[i++] = this.intent === kk ? 1 : 0;
+    return out;
+  }
+  /** What the brain gets: each sense as it was SENSE_DELAY brain steps ago. */
+  sense(out, time, task) {
+    const now = this.senseHist[this.frame % HIST];
+    this.senseNow(now, time, task);
+    if (!this.histFilled) { for (const hh of this.senseHist) hh.set(now); this.histFilled = true; }
+    for (let i = 0; i < SENSES; i++) out[i] = this.senseHist[(this.frame - SENSE_DELAY[i] + HIST) % HIST][i];
+    return out;
+  }
   /** actions[0..61]: muscle excitations (negative = off). override: { jointId: angle } steered by that joint's two muscles. */
   act(actions, override, servo = SERVO) {
+    this.limp = false;
     for (let m = 0; m < NM; m++) this.exc[m] = clamp01(actions ? actions[m] : 0);
     if (override) { const V = this.views(); this.joints.forEach((j, i) => {
       const t = override[j.spec.id]; if (t === undefined) return;
@@ -164,35 +256,143 @@ class Body3D {
       this.exc[2 * i] = clamp01(Math.max(0, -u) + servo.co); this.exc[2 * i + 1] = clamp01(Math.max(0, u) + servo.co);
     }); }
   }
-  /** Every muscle switched off: the body goes limp. */
-  relax() { this.exc.fill(0); }
-  /** One brain step of physics: SUB sub-steps, each with the muscles' joint torques, and the harness if it's on. */
+  /** Brain off: every muscle relaxes and the reflexes are off too (limp, like someone unconscious). */
+  relax() { this.exc.fill(0); this.limp = true; }
+  /** A shove (impulse, N·s, world x/y/z) to a part, spread over the next brain step. */
+  shove(partId, ix, iy, iz = 0) { const b = this.ids[partId], P = this.pending; P[3 * b] += ix / DT; P[3 * b + 1] += iy / DT; P[3 * b + 2] += iz / DT; }
+  /** One brain step of physics: SUB sub-steps with the muscles' joint torques (after the motor nerve delay, plus the
+      stretch reflex), shoves and the harness. */
   step() {
-    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc;
+    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc, P = this.pending, nb = this.nbody;
+    const low = Math.max(0.1, Math.min(1, this.energyLeft / (0.15 * this.energyMax)));   // running on empty: crippling
+    this.excHist[this.frame % HIST].set(this.exc);
+    const drive = this.drive;
+    for (let q = 0; q < NM; q++) drive[q] = this.excHist[(this.frame - MOTOR_DELAY[q] + HIST) % HIST][q];
+    if (!this.limp) for (let q = 0; q < NM; q++) drive[q] = clamp01(drive[q] + REFLEX.gain * Math.max(0, this.mus[q].vn - REFLEX.threshold) * (1 - drive[q ^ 1]));
+    this.frame++;
     for (let n = 0; n < SUB; n++) {
       for (let i = 0; i < NJ; i++) {
-        const q = qpos[this.jq[i]], t = this.mus[2 * i].step(this.exc[2 * i], q, H) + this.mus[2 * i + 1].step(this.exc[2 * i + 1], q, H);
-        this.mtq[2 * i] = t; qf[this.jdq[i]] = t;
+        const q = qpos[this.jq[i]];
+        const t0 = this.mus[2 * i].step(drive[2 * i] * (1 - 0.6 * this.mfat[2 * i]) * low, q, H), t1 = this.mus[2 * i + 1].step(drive[2 * i + 1] * (1 - 0.6 * this.mfat[2 * i + 1]) * low, q, H);
+        this.mtq[2 * i] = t0; this.mtq[2 * i + 1] = t1; qf[this.jdq[i]] = t0 + t1;
       }
-      for (let k = 0; k < 6; k++) xf[6 * pel + k] = 0;
+      for (let b = 1; b < nb; b++) { xf[6 * b] = P[3 * b]; xf[6 * b + 1] = P[3 * b + 1]; xf[6 * b + 2] = P[3 * b + 2]; xf[6 * b + 3] = 0; xf[6 * b + 4] = 0; xf[6 * b + 5] = 0; }
       if (this.harness) {
-        const h = this.harness, q = V.qpos;   // free joint: position (3) then orientation quaternion (w, x, y, z)
-        xf[6 * pel] = 40000 * (h.x - q[0]); xf[6 * pel + 1] = 40000 * (h.y - q[1]); xf[6 * pel + 2] = 40000 * (h.z - q[2]);
-        // keep upright: torque toward the identity orientation (small-angle: 2 × the quaternion's vector part)
-        const w = q[3] >= 0 ? 1 : -1;
-        xf[6 * pel + 3] = -4000 * 2 * w * q[4]; xf[6 * pel + 4] = -4000 * 2 * w * q[5]; xf[6 * pel + 5] = -4000 * 2 * w * q[6];
+        const hh = this.harness, w = qpos[3] >= 0 ? 1 : -1;
+        xf[6 * pel] += 40000 * (hh.x - qpos[0]); xf[6 * pel + 1] += 40000 * (hh.y - qpos[1]); xf[6 * pel + 2] += 40000 * (hh.z - qpos[2]);
+        xf[6 * pel + 3] += -8000 * w * qpos[4]; xf[6 * pel + 4] += -8000 * w * qpos[5]; xf[6 * pel + 5] += -8000 * w * qpos[6];
       }
       this.mj.mj_step(this.model, this.data);
     }
+    P.fill(0);
+    const p = V.xpos; for (let k = 0; k < 3 * nb; k++) this.vel[k] = (p[k] - this.prev[k]) / DT;
+    this.savePositions();
     this.time += DT;
+  }
+  /** Energy and fatigue, once per brain step (as in Embodied 2D). */
+  muscles() {
+    const V = this.views(); let w = BASAL_W;
+    for (let q = 0; q < NM; q++) {
+      const mu = this.mus[q], a = mu.a, om = V.qvel[this.jdq[q >> 1]];
+      w += a * mu.F0 * mu.l0 * MAINT + Math.max(0, this.mtq[q] * om) * WORK_COST;
+      this.mfat[q] = Math.max(0, Math.min(1, this.mfat[q] + DT * (TIRE * a * a * a - RECOVER * this.mfat[q])));
+    }
+    this.joints.forEach((j, i) => { j.fatigue = (this.mfat[2 * i] + this.mfat[2 * i + 1]) / 2; });
+    this.energyLeft = Math.max(0, this.energyLeft - w * DT); this.used += w * DT; this.power += (w - this.power) * 0.05;
+  }
+  /** Fallen = head low, pelvis low (sitting, the splits), or leaning over too far. */
+  checkFallen() {
+    if (!this.fallen && (this.pose('head').pos[2] < 1.15 || this.pose('pelvis').pos[2] < this.hipsLow || this.lean() > 1.3)) this.fallen = true;
+    return this.fallen;
   }
   /** Where a part is and how it's turned (MuJoCo quaternion w, x, y, z). */
   pose(partId) { const V = this.views(), b = this.ids[partId]; return { pos: [V.xpos[3 * b], V.xpos[3 * b + 1], V.xpos[3 * b + 2]], quat: [V.xquat[4 * b], V.xquat[4 * b + 1], V.xquat[4 * b + 2], V.xquat[4 * b + 3]] }; }
   totalMass() { const V = this.views(); let m = 0; for (let b = 1; b < this.nbody; b++) m += V.mass[b]; return m; }
-  free() { this.data.delete(); this.model.delete(); }
+  /** The old step without senses or brain (the limp/harness viewer uses it): muscles + physics. */
+  free() { this.data.delete(); if (this.ownModel) this.model.delete(); }
 }
 
-const api = { DT, SUB, BODY, MUSCLES3D, NJ, NM, SERVO, worldXML, Body3D };
+/* ---------- tasks ---------- */
+const energyBonus = b => 3 * b.energyLeft / b.energyMax;
+const TASKS = {
+  stand: {
+    name: 'Stand', seconds: 8, energy: 14000,
+    setup() { return { alive: 0, drift: 0, wide: 0 }; },
+    senseTask() { return null; },
+    step(st, body, trial) {
+      st.alive += DT;
+      const l = body.pose('footL').pos, r = body.pose('footR').pos, p = body.pose('pelvis').pos;
+      st.wide += Math.max(0, Math.hypot(l[0] - r[0], l[1] - r[1]) - 0.45) * DT;   // a stance wider than 45 cm costs
+      st.drift = Math.max(st.drift, Math.hypot(p[0], p[1]));
+      // a shove to the chest every 2 seconds, from a different direction each time, stronger with the difficulty
+      if (trial.steps % 120 === 60) { const a = trial.rng() * Math.PI * 2, J = 28 * trial.hard; body.shove('chest', Math.cos(a) * J, Math.sin(a) * J); }
+    },
+    score(st, b) { return st.alive - Math.min(st.drift, 2) * 0.5 - st.wide * 2 - (b.fallen ? 2 : 0) + energyBonus(b); },
+    describe(st, b) { return b.fallen ? `fell after ${st.alive.toFixed(1)} s` : `standing · drifted ${(st.drift * 100).toFixed(0)} cm`; },
+    success(st, b) { return !b.fallen; },
+  },
+};
+
+/* ---------- an attempt: brains practising a task, each body in its own copy of one world ---------- */
+class Trial3D {
+  constructor(mj, taskId, brains, opts = {}) {
+    this.mj = mj; this.taskId = taskId; this.task = TASKS[taskId];
+    this.time = 0; this.steps = 0; this.maxSteps = Math.round(this.task.seconds / DT);
+    this.hard = opts.hard === undefined ? 1 : opts.hard; this.noise = opts.noise === undefined ? 0.02 * this.hard : opts.noise;
+    this.keepSimulating = !!opts.keepSimulating; this.brainOff = false;
+    this.rng = Brain.makeRng(opts.seed || 1); this.input = new Float32Array(SENSES);
+    const push = (this.rng() * 2 - 1) * 0.3 * (opts.push === undefined ? this.hard : opts.push), pushDir = this.rng() * Math.PI * 2;
+    this.energy = opts.energy || this.task.energy * (1 + 4 * (1 - this.hard));
+    this.model = mj.MjModel.from_xml_string(worldXML());
+    this.agents = brains.map(params => {
+      const body = new Body3D(mj, { model: this.model, energy: this.energy });
+      body.intent = taskId === 'stand' ? null : taskId;
+      const V = body.views(); V.qvel[0] += Math.cos(pushDir) * push; V.qvel[1] += Math.sin(pushDir) * push;   // a small random push at the start
+      return { body, st: this.task.setup(body, this), net: new Brain.Network(SIZES, params), done: false };
+    });
+  }
+  get finished() { return this.steps >= this.maxSteps || this.agents.every(a => a.done); }
+  step() {
+    const inp = this.input, rng = this.rng;
+    for (const a of this.agents) {
+      if (a.done) { if (this.keepSimulating) { a.body.relax(); a.body.step(); } continue; }
+      a.body.sense(inp, this.time, this.task.senseTask(a.st, a.body));
+      if (this.noise) for (let i = 0; i < inp.length; i++) inp[i] += (rng() - 0.5) * 2 * this.noise;
+      const out = a.net.forward(inp);
+      if (this.brainOff) a.body.relax(); else a.body.act(out);
+      this.task.step(a.st, a.body, this);
+      a.body.step(); a.body.muscles();
+      if (a.body.checkFallen()) { a.done = true; a.fitness = this.task.score(a.st, a.body); a.success = false; }
+    }
+    this.time += DT; this.steps++;
+  }
+  run() { while (!this.finished) this.step(); return this.agents.map(a => a.fitness !== undefined ? a.fitness : this.task.score(a.st, a.body)); }
+  successes() { return this.agents.map(a => a.success !== undefined ? a.success : !!this.task.success(a.st, a.body)); }
+  free() { for (const a of this.agents) a.body.free(); this.agents = []; if (this.model) { this.model.delete(); this.model = null; } }
+}
+
+/* ---------- learning: the same rules as Embodied 2D ---------- */
+/** A new brain: random, but every muscle starts with a light resting tone (like a newborn's). */
+function freshBrain(rng) {
+  const net = Brain.Network.random(SIZES, rng), hid = SIZES[1], start = hid * (SIZES[0] + 1);
+  for (let o = 0; o < NM; o++) { const row = start + o * (hid + 1); for (let q = 0; q < hid; q++) net.params[row + q] *= 0.3; net.params[row + hid] = Math.atanh(0.1); }
+  return net.params;
+}
+const hardness = stage => Math.min(1, stage / 150);
+function nextStage(stage, rate) { return rate >= 2 / 3 ? stage + 1 : rate <= 0 ? Math.max(0, stage - 0.5) : stage; }
+function episodeConfigs(taskId, stage, generation) {
+  const hard = hardness(stage), out = [];
+  for (let e = 0; e < 2; e++) out.push({ seed: Math.round(generation) * 7919 + e * 104729 + 1, hard, push: hard, noise: 0.02 * hard });
+  return out;
+}
+/** Scores per attempt -> one per brain: mean rank, minus a little for inconsistency (as in 2D). */
+function combineRanks(perEpisode) {
+  const n = perEpisode[0].length, ranked = perEpisode.map(sc => { const order = sc.map((s, i) => i).sort((a, b) => sc[a] - sc[b]), r = new Float64Array(n); order.forEach((i, k) => { r[i] = n > 1 ? k / (n - 1) : 1; }); return r; });
+  return Array.from({ length: n }, (_, i) => { const v = ranked.map(r => r[i]), m = v.reduce((s, x) => s + x, 0) / v.length; return m - 0.25 * (Math.max(...v) - Math.min(...v)); });
+}
+
+const api = { DT, SUB, BODY, MUSCLES3D, NJ, NM, SERVO, SENSES, SENSE_AT, SENSE_LIST, SENSE_DELAY, MOTORS, MOTOR_DELAY, REFLEX, SIZES, OUTPUT_GROUPS, INTENTS,
+  TASKS, worldXML, Body3D, Trial3D, freshBrain, hardness, nextStage, episodeConfigs, combineRanks };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body3D = api;
 }

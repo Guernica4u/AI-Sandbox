@@ -26,6 +26,7 @@
   <a href="../../index.html">← Hub</a>
   <h1>GLASS BOX / <span>PLAYGROUND</span></h1>
   <div class="bar">
+    <button id="import">Import brain…</button><input type="file" id="importFile" accept=".json,application/json" hidden>
     <button id="harness">Harness: off</button>
     <button id="drop">Drop it</button>
     <button id="shove">Shove</button>
@@ -35,6 +36,8 @@
 <div id="stage"><canvas id="view"></canvas><div id="status">loading…</div><div id="loading">Loading physics…</div></div>
 
 <script src="../embodied-2d/vendor/mujoco.js"></script>
+<script src="../embodied-2d/brain.js"></script>
+<script src="../embodied-2d/muscle.js"></script>
 <script src="body3d.js"></script>
 <script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }</script>
 <script type="module">
@@ -44,7 +47,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 
 const $ = s => document.querySelector(s);
 const mj = await loadMujocoClassic();
-const { BODY, Body3D: Body } = window.Body3D;
+const { BODY, Body3D: Body, Trial3D, TASKS, SIZES, hardness } = window.Body3D;
 $('#loading').remove();
 
 // three.js scene. MuJoCo is z-up; the world group turns it so three's y is up.
@@ -79,23 +82,54 @@ for (const p of BODY.parts) {
   }
 }
 
-let body = new Body(mj), slow = false, acc = 0, last = 0;
-function reset(harness) { body.free(); body = new Body(mj); body.setHarness(harness); $('#harness').textContent = `Harness: ${harness ? 'on' : 'off'}`; $('#harness').classList.toggle('on', harness); }
-$('#harness').onclick = () => reset(!body.harness);
-$('#drop').onclick = () => reset(false);
-$('#shove').onclick = () => { const V = body.views(), id = body.ids.chest; V.qvel[0] += 0.6; V.qvel[1] += (Math.random() - 0.5) * 0.6; };
+/* Two ways to watch: the body on its own (limp, or held in the harness), or an agent: a trained brain trying to
+   stand, restarted a moment after each attempt ends. */
+let body = new Body(mj), trial = null, brain = null, endAt = 0, slow = false, acc = 0, last = 0;
+body.relax();   // no brain: limp
+function clearTrial() { if (trial) { trial.free(); trial = null; } }
+function reset(harness) {
+  const owned = body && body.trialOwned; clearTrial(); if (body && !owned) body.free(); body = new Body(mj); body.setHarness(harness); body.relax();
+  $('#harness').textContent = `Harness: ${harness ? 'on' : 'off'}`; $('#harness').classList.toggle('on', harness);
+}
+function startAgent() {
+  const owned = body && body.trialOwned; clearTrial(); if (body && !owned) body.free();
+  trial = new Trial3D(mj, brain.skill || 'stand', [Float32Array.from(brain.params)], { seed: (Math.random() * 1e9) | 0, hard: hardness(brain.stage || 0), keepSimulating: true });
+  trial.maxSteps = Infinity; body = trial.agents[0].body; body.trialOwned = true; endAt = 0;
+}
+$('#harness').onclick = () => reset(!(body && body.harness));
+$('#drop').onclick = () => { if (brain) startAgent(); else reset(false); };
+$('#shove').onclick = () => { const a = Math.random() * Math.PI * 2; body.shove('chest', Math.cos(a) * 40, Math.sin(a) * 40); };
+$('#import').onclick = () => $('#importFile').click();
+$('#importFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    if (!Array.isArray(j.params) || !Array.isArray(j.sizes) || j.sizes.join() !== SIZES.join()) throw new Error('that brain is for a different body or senses');
+    brain = j; startAgent(); $('#drop').textContent = 'Restart';
+  } catch (err) { $('#status').textContent = 'Could not load: ' + err.message; }
+};
 $('#slow').onclick = () => { slow = !slow; $('#slow').textContent = `Slow motion: ${slow ? 'on' : 'off'}`; $('#slow').classList.toggle('on', slow); };
 
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
   acc += slow ? dt * 0.2 : dt; let n = 0;
-  while (acc >= 1 / 60 && n++ < 4) { body.step(); acc -= 1 / 60; }
+  while (acc >= 1 / 60 && n++ < 4) {
+    if (trial) {
+      const ag = trial.agents[0];
+      if (ag.done && !endAt) endAt = now + 1500;                    // fell: watch it land, then try again
+      if (endAt && now > endAt) startAgent();
+      trial.step();
+    } else body.step();
+    acc -= 1 / 60;
+  }
   for (const p of BODY.parts) { const { pos, quat } = body.pose(p.id), g = groups[p.id]; g.position.set(...pos); g.quaternion.set(quat[1], quat[2], quat[3], quat[0]); }
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (canvas.width !== Math.round(w * renderer.getPixelRatio())) { renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
   controls.update(); renderer.render(scene, camera);
-  $('#status').textContent = `${body.time.toFixed(1)} s · pelvis ${body.pose('pelvis').pos[2].toFixed(2)} m up · ${body.harness ? 'held in the harness' : 'free'} · no muscles yet: the body is limp`;
+  $('#status').textContent = trial
+    ? `agent · generation ${brain.generation} · difficulty ${Math.round(hardness(brain.stage || 0) * 100)}% · ${trial.time.toFixed(1)} s · ${TASKS.stand.describe(trial.agents[0].st, body)}`
+    : `${body.time.toFixed(1)} s · pelvis ${body.pose('pelvis').pos[2].toFixed(2)} m up · ${body.harness ? 'held in the harness' : 'free'} · no brain: the body is limp (Import brain… to watch an agent)`;
 }
 requestAnimationFrame(frame);
 </script>
