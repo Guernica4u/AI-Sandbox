@@ -9,7 +9,9 @@
  Each iteration: every core practises with 2 bodies (the skills shared out over all the bodies) for 512 brain steps,
  then the brain and the critic learn from all of it together. Each skill has its own difficulty stage, which rises
  only while that skill copes. Saves every 5 iterations and continues where it left off.
- Env: GB_STAGE=<n> start stage (fresh brains), GB_ASSIST=<0..1> fixed helping hands (default: by stage).
+ Env: GB_STAGE=<n> start stage (fresh brains), GB_ASSIST=<0..1> fixed helping hands (default: by stage),
+      GB_STEER=0 walk straight (no turning orders), GB_SLOW=0 copy at the person's own speed from the start,
+      GB_HIDDEN=128,128 a bigger fresh brain.
 */
 'use strict';
 const fs = require('fs'), os = require('os'), path = require('path');
@@ -57,7 +59,7 @@ env.load().then(async () => {
   const n = Math.max(1, Math.min(+coresArg || os.cpus().length - 1, 48)), E = 2;
   const workers = await Promise.all(Array.from({ length: n }, (_, k) => new Promise(res => {
     const specs = Array.from({ length: E }, (_, e) => skills[(k * E + e) % skills.length]);   // the skills shared out over all bodies
-    const w = new Worker(__filename, { workerData: { specs, stages: L.stages, seed: +seed * 100 + k + 1, envs: E, steps: 512, assist } });
+    const w = new Worker(__filename, { workerData: { specs, stages: L.stages, seed: +seed * 100 + k + 1, envs: E, steps: 512, assist, steer: process.env.GB_STEER !== '0', slow: process.env.GB_SLOW !== '0' } });
     w.once('message', () => res(w));
   })));
   let nextId = 1;

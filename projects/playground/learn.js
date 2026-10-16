@@ -194,7 +194,7 @@ class Env {
       this.refT = t0; this.body.intent = CLIP_INTENT[this.cfg.clip] || null;
       this.yaw = this.steer ? (this.rng() * 2 - 1) * Math.PI : 0; this.cmd = this.yaw; this.off = [0, 0];
       // like a toddler: repeating moves (walking) start at half the person's speed and reach full speed by stage 40
-      this.speed = this.ref.loop ? 0.5 + 0.5 * Math.min(1, st / 40) : 1;
+      this.speed = this.ref.loop && this.cfg.slow !== false ? 0.5 + 0.5 * Math.min(1, st / 40) : 1;
       const q = this.refPose(t0, this.refQ), v = this.refVel(t0, this.refV);
       V.qpos.set(q); V.qvel.fill(0); V.qvel[0] = v[0]; V.qvel[1] = v[1]; V.qvel[2] = v[2];
       for (const j of this.body.joints) V.qvel[j.dq] = v[j.q];
@@ -302,7 +302,7 @@ class Practice {
     // mixed practice: opts.specs gives each body its own skill ({ key, taskId, clip }); otherwise all practise one
     const specs = opts.specs || Array.from({ length: this.E }, () => ({ key: opts.clip ? 'copy:' + opts.clip : opts.taskId, taskId: opts.taskId, clip: opts.clip }));
     this.envs = specs.map((sp, e) => Object.assign(new Env(mj, { taskId: sp.taskId || 'stand', stage: (opts.stages && opts.stages[sp.key]) || opts.stage || 0, seed: (opts.seed || 1) * 1000 + e + 1,
-      seconds: sp.clip ? 10 : opts.seconds || B3.TASKS[sp.taskId || 'stand'].seconds, assist: opts.assist, clip: sp.clip }), { key: sp.key }));
+      seconds: sp.clip ? 10 : opts.seconds || B3.TASKS[sp.taskId || 'stand'].seconds, assist: opts.assist, clip: sp.clip, steer: opts.steer, slow: opts.slow }), { key: sp.key }));
     this.rng = Brain.makeRng((opts.seed || 1) * 7 + 3);
     const N = this.E * this.T, S = B3.SENSES, A = B3.MOTORS;
     this.obs = new Float32Array(N * S); this.act = new Float32Array(N * A); this.logp = new Float32Array(N);
