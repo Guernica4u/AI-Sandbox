@@ -471,7 +471,7 @@ function frame(now) {
 
 load(); refreshAgents(); select('watch');
 requestAnimationFrame(frame);
-window.__pg = { App, View, Test, stepOnce, successCheck, Ghost, poseGhost, render: () => renderer.render(scene, camera), camera, controls };   // for checking the page from the console
+window.__pg = { App, View, Test, stepOnce, successCheck, Ghost, poseGhost, groups, render: () => renderer.render(scene, camera), camera, controls };   // for checking the page from the console
 </script>
 </body>
 </html>
