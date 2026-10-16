@@ -1,0 +1,4 @@
+
+# training runs (brains and logs, large and always changing)
+training/
+race-brains/
