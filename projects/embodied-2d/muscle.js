@@ -108,15 +108,22 @@ const EXCURSION = 0.35;     // a full joint sweep keeps fibres within ±35% of i
     down and 2i+1 pulls it up. */
 function makeMuscles(jointIds, { speed = SPEED, excursion = EXCURSION } = {}) {
   return jointIds.flatMap(id => {
-    const k = id.replace(/[LR]$/, ''), g = MUSCLES[k], [lo, hi] = RANGE[k];
-    return ['down', 'up'].map(side => {
-      const [T, arm, ls0, strain] = g[side], l0 = arm * (hi - lo) / 2 / excursion;
-      return new MTU({ F0: T / arm, arm, dir: side === 'up' ? 1 : -1, l0, ls: Math.max(ls0, 0.5 * l0), strain, vmax: speed * TOPSPEED[k] * arm / l0, theta0: g.mid });
-    });
+    const k = id.replace(/[LR]$/, '');
+    return makePair({ up: MUSCLES[k].up, down: MUSCLES[k].down, mid: MUSCLES[k].mid, range: RANGE[k], topSpeed: TOPSPEED[k] }, { speed, excursion });
+  });
+}
+/** One joint direction's muscle pair [down, up] from its numbers: up/down = [peak torque N·m, moment arm m, tendon
+    slack m, tendon strain at peak], mid = angle where the fibres are ideal, range = [lo, hi], topSpeed = rad/s.
+    (Used for any body: the 2D biped through MUSCLES above, the 3D Playground body with its own table.) */
+function makePair(g, { speed = SPEED, excursion = EXCURSION } = {}) {
+  const [lo, hi] = g.range;
+  return ['down', 'up'].map(side => {
+    const [T, arm, ls0, strain] = g[side], l0 = arm * (hi - lo) / 2 / excursion;
+    return new MTU({ F0: T / arm, arm, dir: side === 'up' ? 1 : -1, l0, ls: Math.max(ls0, 0.5 * l0), strain, vmax: speed * g.topSpeed * arm / l0, theta0: g.mid });
   });
 }
 
-const api = { MTU, MUSCLES, RANGE, TOPSPEED, SPEED, makeMuscles, TAU_ACT, TAU_DEACT, fv, fibreSpeed, BETA };
+const api = { MTU, MUSCLES, RANGE, TOPSPEED, SPEED, makeMuscles, makePair, TAU_ACT, TAU_DEACT, fv, fibreSpeed, BETA };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Muscle = api;
 }

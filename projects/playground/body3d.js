@@ -9,12 +9,14 @@
  per direction, so every direction can get its own muscle pair.
 
  MuJoCo's frame: x forward, y to the body's left, z up. Units: m, kg, s.
- Needs the MuJoCo module (loadMujocoClassic(), ../embodied-2d/vendor/mujoco.js).
- Muscles, senses and the brain come next (they'll reuse muscle.js and brain.js).
+ Muscles: every joint direction has a pair (one pulls its angle up, one down), built by muscle.js with human
+ strengths for a ~62 kg adult. Needs the MuJoCo module (loadMujocoClassic(), ../embodied-2d/vendor/mujoco.js)
+ and Muscle (../embodied-2d/muscle.js). Senses and the brain come next.
 ================================================================================
 */
 function __body3dModule(root) {
 'use strict';
+const Muscle = root.Muscle || (typeof require === 'function' ? require('../embodied-2d/muscle.js') : null);
 
 const DT = 1 / 60, SUB = 6, H = DT / SUB;   // brain step; physics sub-steps (360 Hz), as in Embodied 2D
 const SIDES = [['L', 1], ['R', -1]];         // left is +y
@@ -67,6 +69,44 @@ function plan() {
 }
 const BODY = plan();
 
+/* ---------- muscles: a pair per joint direction ----------
+   [peak torque N·m, moment arm m, tendon slack m, tendon strain at peak] for the muscle pulling the angle up and the
+   one pulling it down, the joint's top speed (rad/s), and where the fibres are ideal (default: mid-range).
+   Directions: Flex + = forward (trunk and head: tip back); Side + = away from the midline; Twist + = outward.
+   Human figures for a ~62 kg adult; flex/extend numbers are the ones calibrated in Embodied 2D.                    */
+const MUSCLES3D = {
+  hipFlex:       { up: [150, 0.05, 0.10, 0.04], down: [220, 0.05, 0.10, 0.04], speed: 15, mid: 0.65 },   // flexors / glutes
+  hipSide:       { up: [120, 0.05, 0.10, 0.04], down: [130, 0.05, 0.10, 0.04], speed: 10 },              // abductors / adductors
+  hipTwist:      { up: [60, 0.03, 0.12, 0.05], down: [50, 0.03, 0.12, 0.05], speed: 10 },                // outward / inward rotators
+  knee:          { up: [200, 0.045, 0.15, 0.045], down: [100, 0.03, 0.20, 0.04], speed: 20, mid: -1.15 }, // quadriceps / hamstrings
+  ankleFlex:     { up: [40, 0.04, 0.20, 0.04], down: [150, 0.05, 0.25, 0.06], speed: 20, mid: -0.2 },   // shin / calf (Achilles)
+  ankleSide:     { up: [30, 0.03, 0.10, 0.04], down: [35, 0.03, 0.10, 0.04], speed: 10 },                // evertors / invertors
+  toe:           { up: [10, 0.02, 0.10, 0.04], down: [25, 0.02, 0.15, 0.05], speed: 15, mid: 0.2 },
+  lumbarFlex:    { up: [200, 0.05, 0.20, 0.05], down: [150, 0.08, 0.20, 0.05], speed: 8, mid: -0.25 },  // back / abdominals
+  lumbarSide:    { up: [150, 0.06, 0.20, 0.05], down: [150, 0.06, 0.20, 0.05], speed: 6 },
+  lumbarTwist:   { up: [60, 0.04, 0.15, 0.05], down: [60, 0.04, 0.15, 0.05], speed: 6 },   // twist muscles: long springy tendons (short stiff ones made the light twisting parts shake)
+  thoracicFlex:  { up: [100, 0.04, 0.15, 0.05], down: [70, 0.06, 0.15, 0.05], speed: 8, mid: -0.1 },
+  thoracicSide:  { up: [80, 0.05, 0.15, 0.05], down: [80, 0.05, 0.15, 0.05], speed: 6 },
+  thoracicTwist: { up: [40, 0.04, 0.12, 0.05], down: [40, 0.04, 0.12, 0.05], speed: 6 },
+  neckFlex:      { up: [30, 0.03, 0.12, 0.05], down: [20, 0.025, 0.12, 0.05], speed: 10, mid: -0.05 },
+  neckSide:      { up: [20, 0.025, 0.10, 0.05], down: [20, 0.025, 0.10, 0.05], speed: 8 },
+  neckTwist:     { up: [12, 0.02, 0.12, 0.05], down: [12, 0.02, 0.12, 0.05], speed: 8 },
+  shoulderFlex:  { up: [60, 0.03, 0.05, 0.04], down: [60, 0.03, 0.05, 0.04], speed: 20, mid: 1.0 },
+  shoulderSide:  { up: [55, 0.03, 0.05, 0.04], down: [70, 0.03, 0.05, 0.04], speed: 15 },                // deltoid / adductors
+  shoulderTwist: { up: [30, 0.025, 0.12, 0.05], down: [40, 0.025, 0.12, 0.05], speed: 20 },
+  elbow:         { up: [55, 0.03, 0.10, 0.04], down: [40, 0.03, 0.10, 0.04], speed: 25, mid: 1.25 },    // biceps / triceps
+};
+const muscleKey = jointId => jointId.replace(/[LR](?=[A-Z]|$)/, '');   // 'hipLFlex' -> 'hipFlex', 'kneeR' -> 'knee'
+function makeMuscles3D() {
+  return BODY.joints.flatMap(j => {
+    const g = MUSCLES3D[muscleKey(j.id)];
+    return Muscle.makePair({ up: g.up, down: g.down, range: j.range, topSpeed: g.speed, mid: g.mid !== undefined ? g.mid : (j.range[0] + j.range[1]) / 2 });
+  });
+}
+const NJ = BODY.joints.length, NM = 2 * NJ;   // 31 joint directions, 62 muscles (muscle 2i pulls joint i's angle down, 2i+1 up)
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+const SERVO = { kp: 1.5, kd: 0.07, co: 0.15 };   // steering a joint to an angle with its two muscles (tests, the ideal)
+
 /* ---------- the world, as MJCF ---------- */
 // contacts: the body touches the ground, objects and itself (MuJoCo skips a part and its own parent automatically)
 const CONTACT = { body: 'contype="2" conaffinity="3"', ground: 'contype="1" conaffinity="2"' };
@@ -101,7 +141,11 @@ class Body3D {
     this.ids = {}; for (const p of BODY.parts) this.ids[p.id] = id(mj.mjtObj.mjOBJ_BODY.value, p.id);
     this.joints = BODY.joints.map(j => { const k = id(mj.mjtObj.mjOBJ_JOINT.value, j.id); return Object.assign({ spec: j }, { q: this.model.jnt_qposadr[k], dq: this.model.jnt_dofadr[k] }); });
     this.nbody = this.model.nbody; this.harness = null; this.time = 0;
+    this.mus = makeMuscles3D(); this.exc = new Float64Array(NM); this.mtq = new Float64Array(NM);
+    this.jq = Int32Array.from(this.joints, j => j.q); this.jdq = Int32Array.from(this.joints, j => j.dq);
     mj.mj_forward(this.model, this.data);
+    // start already standing: muscles settle at a light resting tone before time starts
+    for (let k = 0; k < 400; k++) for (let m = 0; m < NM; m++) this.mus[m].step(0.1, this.data.qpos[this.jq[m >> 1]], 1 / 400);
   }
   /** Typed-array views of MuJoCo's state, kept (building them on every read is slow), rebuilt if memory grew. */
   views() {
@@ -111,10 +155,25 @@ class Body3D {
   }
   /** Hold the pelvis up (on) or let go: springs on its position and tilt, with MuJoCo-applied damping (stable). */
   setHarness(on) { const V = this.views(); this.harness = on ? { x: V.qpos[0], y: V.qpos[1], z: 1.01 } : null; const d = V.damping; for (let k = 0; k < 6; k++) d[k] = on ? (k < 3 ? 3000 : 200) : 0; }
-  /** One brain step of physics (no muscles yet: the body is limp, or held in the harness). */
+  /** actions[0..61]: muscle excitations (negative = off). override: { jointId: angle } steered by that joint's two muscles. */
+  act(actions, override, servo = SERVO) {
+    for (let m = 0; m < NM; m++) this.exc[m] = clamp01(actions ? actions[m] : 0);
+    if (override) { const V = this.views(); this.joints.forEach((j, i) => {
+      const t = override[j.spec.id]; if (t === undefined) return;
+      const u = servo.kp * (t - V.qpos[j.q]) - servo.kd * V.qvel[j.dq];
+      this.exc[2 * i] = clamp01(Math.max(0, -u) + servo.co); this.exc[2 * i + 1] = clamp01(Math.max(0, u) + servo.co);
+    }); }
+  }
+  /** Every muscle switched off: the body goes limp. */
+  relax() { this.exc.fill(0); }
+  /** One brain step of physics: SUB sub-steps, each with the muscles' joint torques, and the harness if it's on. */
   step() {
-    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc;
+    const V = this.views(), pel = this.ids.pelvis, xf = V.xfrc, qpos = V.qpos, qf = V.qfrc;
     for (let n = 0; n < SUB; n++) {
+      for (let i = 0; i < NJ; i++) {
+        const q = qpos[this.jq[i]], t = this.mus[2 * i].step(this.exc[2 * i], q, H) + this.mus[2 * i + 1].step(this.exc[2 * i + 1], q, H);
+        this.mtq[2 * i] = t; qf[this.jdq[i]] = t;
+      }
       for (let k = 0; k < 6; k++) xf[6 * pel + k] = 0;
       if (this.harness) {
         const h = this.harness, q = V.qpos;   // free joint: position (3) then orientation quaternion (w, x, y, z)
@@ -133,7 +192,7 @@ class Body3D {
   free() { this.data.delete(); this.model.delete(); }
 }
 
-const api = { DT, SUB, BODY, worldXML, Body3D };
+const api = { DT, SUB, BODY, MUSCLES3D, NJ, NM, SERVO, worldXML, Body3D };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.Body3D = api;
 }
