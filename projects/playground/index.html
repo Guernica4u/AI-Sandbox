@@ -26,7 +26,9 @@
   <a href="../../index.html">← Hub</a>
   <h1>GLASS BOX / <span>PLAYGROUND</span></h1>
   <div class="bar">
+    <button id="train">Train</button>
     <button id="import">Import brain…</button><input type="file" id="importFile" accept=".json,application/json" hidden>
+    <button id="export">Export brain</button>
     <button id="harness">Harness: off</button>
     <button id="drop">Drop it</button>
     <button id="shove">Shove</button>
@@ -47,7 +49,9 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 
 const $ = s => document.querySelector(s);
 const mj = await loadMujocoClassic();
-const { BODY, Body3D: Body, Trial3D, TASKS, SIZES, hardness } = window.Body3D;
+const { BODY, Body3D: Body, Trial3D, TASKS, SIZES, OUTPUT_GROUPS, hardness, nextStage, episodeConfigs, combineRanks, freshBrain } = window.Body3D;
+const { Evolution, makeRng, toBase64, fromBase64 } = window.Brain;
+const LS_KEY = 'glassbox-playground/v1';   // the agent's brain, kept in this browser
 $('#loading').remove();
 
 // three.js scene. MuJoCo is z-up; the world group turns it so three's y is up.
@@ -105,10 +109,87 @@ $('#importFile').onchange = async e => {
   try {
     const j = JSON.parse(await f.text());
     if (!Array.isArray(j.params) || !Array.isArray(j.sizes) || j.sizes.join() !== SIZES.join()) throw new Error('that brain is for a different body or senses');
-    brain = j; startAgent(); $('#drop').textContent = 'Restart';
+    if (Train.running) Train.stop();
+    brain = j; saveBrain(); startAgent(); $('#drop').textContent = 'Restart'; renderButtons();
   } catch (err) { $('#status').textContent = 'Could not load: ' + err.message; }
 };
 $('#slow').onclick = () => { slow = !slow; $('#slow').textContent = `Slow motion: ${slow ? 'on' : 'off'}`; $('#slow').classList.toggle('on', slow); };
+
+/* ---------- training on every CPU core (background workers built from this page's own scripts) ---------- */
+function __trainerWorker3D() {
+  let ready = null;
+  self.onmessage = async e => {
+    const m = e.data;
+    if (!ready) ready = loadMujocoClassic().then(mj => { self.MJ = mj; });
+    await ready;
+    const genomes = m.genomes.map(g => new Float32Array(g)), scores = [], successes = [];
+    for (const ep of m.episodes) { const t = new self.Body3D.Trial3D(self.MJ, ep.taskId, genomes, ep.cfg); scores.push(t.run()); successes.push(t.successes()); t.free(); }
+    self.postMessage({ id: m.id, scores, successes });
+  };
+}
+const Pool = {
+  workers: null, nextId: 1, pending: {},
+  start() {
+    if (this.workers) return;
+    const src = `var __MUJOCO_WASM_B64 = ${JSON.stringify(__MUJOCO_WASM_B64)};\n${__mujocoFactory.toString()}\n${loadMujocoClassic.toString()}\n` +
+      `(${__brainModule.toString()})(self);\n(${__muscleModule.toString()})(self);\n(${__body3dModule.toString()})(self);\n(${__trainerWorker3D.toString()})();`;
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const n = Math.max(1, Math.min(16, (navigator.hardwareConcurrency || 4) - 1));   // leave one core for the page
+    this.workers = Array.from({ length: n }, () => { const w = new Worker(url); w.onmessage = e => { const p = this.pending[e.data.id]; if (p) { delete this.pending[e.data.id]; p(e.data); } }; return w; });
+  },
+  run(episodes, population) {
+    const n = this.workers.length, per = Math.ceil(population.length / n), jobs = [];
+    for (let w = 0; w < n; w++) {
+      const chunk = population.slice(w * per, (w + 1) * per); if (!chunk.length) break;
+      const id = this.nextId++;
+      jobs.push(new Promise(res => { this.pending[id] = res; this.workers[w].postMessage({ id, episodes, genomes: chunk.map(g => Array.from(g)) }); }));
+    }
+    return Promise.all(jobs).then(parts => ({ scores: episodes.map((_, e) => [].concat(...parts.map(p => p.scores[e]))), successes: episodes.map((_, e) => [].concat(...parts.map(p => p.successes[e]))) }));
+  },
+};
+const Train = {
+  running: false, token: 0, evo: null, genSecs: 0,
+  async start() {
+    Pool.start();
+    const b = brain;
+    this.evo = new Evolution({ sizes: SIZES, popSize: 48, seed: (b ? b.generation : 0) + 1, sigma: b ? b.sigma || 0.15 : 0.15,
+      parent: b ? Float32Array.from(b.params) : freshBrain(makeRng(1)), outputGroups: OUTPUT_GROUPS, generation: b ? b.generation : 0, history: b ? b.history || [] : [] });
+    if (!brain) { brain = { skill: 'stand', stage: 0, generation: 0, sizes: SIZES, params: Array.from(this.evo.best) }; startAgent(); }
+    this.running = true; const token = ++this.token; renderButtons();
+    while (this.running && token === this.token) {
+      const t0 = performance.now(), skill = brain.skill || 'stand';
+      const eps = episodeConfigs(skill, brain.stage || 0, this.evo.generation).map(cfg => ({ taskId: skill, cfg }));
+      const r = await Pool.run(eps, this.evo.population);
+      if (!this.running || token !== this.token) return;
+      const combined = combineRanks(r.scores);
+      let best = 0; for (let i = 1; i < combined.length; i++) if (combined[i] > combined[best]) best = i;
+      const stage = nextStage(brain.stage || 0, r.successes.reduce((s, ep) => s + (ep[best] ? 1 : 0), 0) / r.successes.length);   // harder only while the best copes
+      this.evo.tell(combined);
+      brain = { skill, stage, generation: this.evo.generation, sigma: this.evo.sigma, sizes: SIZES, history: this.evo.history, params: Array.from(this.evo.best) };
+      this.genSecs = (performance.now() - t0) / 1000;
+      saveBrain();
+      document.title = document.hidden ? `Gen ${this.evo.generation} · training · Playground` : 'Playground · Glass Box';
+    }
+  },
+  stop() { this.running = false; this.token++; document.title = 'Playground · Glass Box'; renderButtons(); },
+};
+function saveBrain() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(Object.assign({}, brain, { params: undefined, weights: toBase64(Float32Array.from(brain.params)) }))); } catch (e) { /* storage blocked: the brain still lives on the page */ }
+}
+function loadBrain() {
+  try { const j = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); if (j && j.weights && j.sizes && j.sizes.join() === SIZES.join()) { j.params = Array.from(fromBase64(j.weights)); delete j.weights; return j; } } catch (e) {}
+  return null;
+}
+function renderButtons() { $('#train').textContent = Train.running ? 'Stop training' : brain ? 'Train more' : 'Train'; $('#train').classList.toggle('on', Train.running); }
+$('#train').onclick = () => { if (Train.running) Train.stop(); else Train.start(); };
+$('#export').onclick = () => {
+  if (!brain) return void ($('#status').textContent = 'Nothing to export yet: train or import a brain first.');
+  const blob = new Blob([JSON.stringify(Object.assign({ bodyPlan: BODY.id }, brain))], { type: 'application/json' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `playground-brain-gen${brain.generation}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+brain = loadBrain();
+if (brain) { startAgent(); $('#drop').textContent = 'Restart'; }
+renderButtons();
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -118,7 +199,7 @@ function frame(now) {
     if (trial) {
       const ag = trial.agents[0];
       if (ag.done && !endAt) endAt = now + 1500;                    // fell: watch it land, then try again
-      if (endAt && now > endAt) startAgent();
+      if (endAt && now > endAt) startAgent();   // (while training, each new attempt uses the best brain so far)
       trial.step();
     } else body.step();
     acc -= 1 / 60;
@@ -128,7 +209,7 @@ function frame(now) {
   if (canvas.width !== Math.round(w * renderer.getPixelRatio())) { renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
   controls.update(); renderer.render(scene, camera);
   $('#status').textContent = trial
-    ? `agent · generation ${brain.generation} · difficulty ${Math.round(hardness(brain.stage || 0) * 100)}% · ${trial.time.toFixed(1)} s · ${TASKS.stand.describe(trial.agents[0].st, body)}`
+    ? `${Train.running ? `training on ${Pool.workers.length} cores · ${Train.genSecs.toFixed(1)} s/gen · replaying the best · ` : ''}agent · generation ${brain.generation} · difficulty ${Math.round(hardness(brain.stage || 0) * 100)}% · ${trial.time.toFixed(1)} s · ${TASKS.stand.describe(trial.agents[0].st, body)}`
     : `${body.time.toFixed(1)} s · pelvis ${body.pose('pelvis').pos[2].toFixed(2)} m up · ${body.harness ? 'held in the harness' : 'free'} · no brain: the body is limp (Import brain… to watch an agent)`;
 }
 requestAnimationFrame(frame);
